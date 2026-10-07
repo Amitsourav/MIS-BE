@@ -18,8 +18,14 @@ from app.config import settings
 from app.database import SessionLocal
 from app.models import MisLead, ProviderSource, SyncState
 from app.models.enums import Brand
-from app.sync.connectors import CrmUnavailable, fetch_changed_leads, fetch_stage_logs
+from app.sync.connectors import (
+    CrmUnavailable,
+    fetch_changed_leads,
+    fetch_partner_payouts,
+    fetch_stage_logs,
+)
 from app.sync.normalize import build_lead_fact
+from app.services import payouts
 from app.services.rollup import cohort_day, recompute_cohorts
 
 logger = logging.getLogger("mis.sync.worker")
@@ -87,6 +93,32 @@ async def _upsert_lead(db: AsyncSession, fact: dict) -> None:
         constraint="uq_mis_leads_brand_lead", set_=update_cols
     )
     await db.execute(stmt)
+
+
+async def _sync_payouts(
+    db: AsyncSession, brand: Brand, source_map: dict[uuid.UUID, uuid.UUID]
+) -> str:
+    """Full-refresh `mis_payouts` from the CRM view in one transaction.
+
+    Never raises: a failure is rolled back and reported in the returned status
+    note, so it can't fail the (already committed) lead sync. If the fetch fails
+    nothing is deleted — an error is never mistaken for an empty view.
+    """
+    if brand not in payouts.PAYOUT_BRANDS:
+        return ""
+    try:
+        rows = await fetch_partner_payouts(brand)
+        counts = await payouts.apply_snapshot(db, brand, rows, source_map)
+        await db.commit()
+        logger.info("[sync %s] payouts %s", brand.value, counts)
+        return (
+            f"; payouts: {len(rows)} files ({counts['inserted']} new, "
+            f"{counts['deleted']} removed, {counts['unmapped']} unmapped)"
+        )
+    except Exception as exc:  # noqa: BLE001
+        await db.rollback()
+        logger.exception("[sync %s] payout sync failed", brand.value)
+        return f"; payouts error: {exc}"
 
 
 async def sync_brand(brand: Brand) -> dict:
@@ -160,11 +192,17 @@ async def sync_brand(brand: Brand) -> dict:
 
             # recompute affected rollups
             await recompute_cohorts(db, affected)
+            await db.commit()
 
+            # Payouts run after leads are committed, in their own transaction.
+            payout_note = await _sync_payouts(db, brand, source_map)
+
+            state = await _get_or_create_state(db, brand)  # reload after a possible rollback
             state.last_run_at = datetime.now(timezone.utc)
             state.last_status = (
                 f"ok: {processed} processed, {skipped_unmapped} unmapped (stored, "
                 f"awaiting source mapping), {len(affected)} cohorts recomputed"
+                f"{payout_note}"
             )
             await db.commit()
             logger.info("[sync %s] %s", brand.value, state.last_status)

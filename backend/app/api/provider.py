@@ -17,6 +17,7 @@ from app.models import MisLead, ProviderDailyMetric, ProviderSource, SyncState
 from app.models.enums import Brand, CanonicalStage
 from app.schemas.common import Page
 from app.schemas.lead import LeadOut
+from app.schemas.payout import PayoutsResponse
 from app.schemas.metrics import (
     BrandSplitResponse,
     BrandSplitRow,
@@ -26,6 +27,7 @@ from app.schemas.metrics import (
     TrendsResponse,
 )
 from app.services import metrics as M
+from app.services import payouts as P
 from app.services.scorecard import compute_scorecard, load_targets
 
 router = APIRouter(prefix="/me", tags=["provider"])
@@ -319,4 +321,78 @@ async def leads_export(
         iter([buf.getvalue()]),
         media_type="text/csv",
         headers={"Content-Disposition": "attachment; filename=leads.csv"},
+    )
+
+
+# --- partner payouts (Payout page) ---
+# Mounted under /provider (not /me) to match the Payout page contract. Same
+# scoping rule: provider_id comes only from the JWT via `require_provider`.
+payouts_router = APIRouter(prefix="/provider", tags=["provider"])
+
+
+@payouts_router.get("/payouts", response_model=PayoutsResponse)
+async def payouts(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    principal: Principal = Depends(require_provider),
+    db: AsyncSession = Depends(get_db),
+) -> PayoutsResponse:
+    """Earnings on the caller's students who have paid PF to a lender. Dates
+    filter on pf_paid_on; omitted = all time."""
+    return await P.build_payouts_page(
+        db,
+        provider_id=principal.provider_id,
+        provider_brand=principal.brand,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@payouts_router.get("/payouts/export")
+async def payouts_export(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    principal: Principal = Depends(require_provider),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    items = await P.payout_items_for_export(
+        db,
+        provider_id=principal.provider_id,
+        provider_brand=principal.brand,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(
+        ["serial_no", "full_name", "bank_name", "loan_amount", "pf_paid_on",
+         "disbursed_total", "payout_basis", "payout_rate", "earned", "paid",
+         "pending"]
+    )
+    for it in items:
+        row = it.model_dump(mode="json")
+        writer.writerow(
+            [
+                row["serial_no"] or "",
+                row["full_name"] or "",
+                row["bank_name"] or "",
+                row["loan_amount"] or "",
+                row["pf_paid_on"] or "",
+                row["disbursed_total"],
+                row["payout_basis"],
+                row["payout_rate"] or "",
+                row["earned"],
+                row["paid"],
+                row["pending"],
+            ]
+        )
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=payouts.csv"},
     )

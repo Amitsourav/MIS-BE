@@ -57,6 +57,7 @@ app.add_middleware(
 # Routers
 app.include_router(auth.router)
 app.include_router(provider.router)
+app.include_router(provider.payouts_router)
 app.include_router(admin.router)
 
 

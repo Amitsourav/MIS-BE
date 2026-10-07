@@ -43,10 +43,11 @@ from app.schemas.sync import (
     SyncStateOut,
     SyncStatusResponse,
 )
+from app.schemas.payout import PayoutsResponse
 from app.schemas.target import TargetOut, TargetsBulkUpdate
 from app.models import SyncState
 from app.services import metrics as M
-from app.services import rollup
+from app.services import payouts, rollup
 from app.services.scorecard import compute_scorecard, load_targets
 from app.sync import connectors, worker
 
@@ -265,11 +266,17 @@ async def map_source(
         brand=body.brand,
         crm_source_id=body.crm_source_id,
     )
+    payouts_claimed = await payouts.claim_unmapped_payouts(
+        db,
+        provider_id=provider_id,
+        brand=body.brand,
+        crm_source_id=body.crm_source_id,
+    )
     await db.commit()
     await db.refresh(mapping)
     _audit(principal, "map_source", provider_id=str(provider_id),
            brand=body.brand.value, crm_source_id=str(body.crm_source_id),
-           backfilled=claimed)
+           backfilled=claimed, payouts_backfilled=payouts_claimed)
     return ProviderSourceOut.model_validate(mapping)
 
 
@@ -284,6 +291,30 @@ async def list_provider_sources(
         select(ProviderSource).where(ProviderSource.provider_id == provider_id)
     )
     return [ProviderSourceOut.model_validate(s) for s in rows.scalars().all()]
+
+
+@router.get("/providers/{provider_id}/payouts", response_model=PayoutsResponse)
+async def provider_payouts(
+    provider_id: uuid.UUID,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    principal: Principal = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> PayoutsResponse:
+    """The provider's Payout page as an admin sees it. Out-of-scope providers
+    404; an AV provider returns brand_supported=false."""
+    provider = await _get_scoped_provider(db, principal, provider_id)
+    return await payouts.build_payouts_page(
+        db,
+        provider_id=provider.id,
+        provider_brand=provider.brand,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.get("/crm-sources", response_model=list[CrmSourceOut])

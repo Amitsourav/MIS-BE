@@ -118,6 +118,28 @@ async def fetch_stage_logs(
     return out
 
 
+async def fetch_partner_payouts(brand: Brand) -> list[dict[str, Any]]:
+    """Full snapshot of the CRM's partner-payout view (one row per lender file
+    that has reached PF paid). FMC only — Admitverse has no lender commission,
+    so AV returns []. Reads ONLY the view; mis_readonly is blocked from every
+    other CRM table besides leads / lead_sources / lead_stage_logs."""
+    if brand != Brand.FMC:
+        return []
+    sql = """
+        SELECT
+            lead_bank_id, lead_id, lead_source_id, bank_name, loan_amount,
+            pf_paid_on, disbursed_total, payout_basis, payout_rate,
+            payout_earned, payout_paid, payout_pending, updated_at
+        FROM public.mis_partner_payouts
+    """
+    conn = await _connect(brand)
+    try:
+        rows = await conn.fetch(sql)
+    finally:
+        await conn.close()
+    return [dict(r) for r in rows]
+
+
 async def list_lead_sources(brand: Brand) -> list[dict[str, Any]]:
     """List all lead_sources for the admin mapping picker (read-only proxy)."""
     s = CRM_SCHEMAS[brand]

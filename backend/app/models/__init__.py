@@ -6,6 +6,7 @@ autogenerate and `create_all` (tests) see the full schema.
 from app.models.enums import Brand, CanonicalStage
 from app.models.lead import MisLead
 from app.models.metrics import ProviderDailyMetric
+from app.models.payout import MisPayout
 from app.models.provider import (
     AdminUser,
     Provider,
@@ -23,6 +24,7 @@ __all__ = [
     "AdminUser",
     "ProviderSource",
     "MisLead",
+    "MisPayout",
     "ProviderDailyMetric",
     "SyncState",
     "Target",

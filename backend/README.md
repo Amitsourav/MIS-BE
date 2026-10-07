@@ -84,7 +84,11 @@ May 2026; AV has a ~17-stage pipeline). CRM table/column names are also overrida
 **Provider (scoped to caller)** — `GET /me/overview` · `/me/trends` · `/me/brand-split`
 · `/me/quality` · `/me/leads` · `/me/leads/export`
 
-**Admin** — `POST/GET/PUT /admin/providers` · `POST /admin/providers/{id}/users`
+**Payouts (provider, FMC only)** — `GET /provider/payouts` · `/provider/payouts/export`
+(`date_from`/`date_to` filter on the PF-paid date; omitted = all time; AV providers get
+`brand_supported: false`). Money is returned as 2-dp strings.
+
+**Admin** — `POST/GET/PUT /admin/providers` · `GET /admin/providers/{id}/payouts` · `POST /admin/providers/{id}/users`
 · `POST/GET /admin/providers/{id}/sources` · `GET /admin/crm-sources` ·
 `GET /admin/leaderboard` · `GET/PUT /admin/targets` · `POST /admin/sync/run` ·
 `GET /admin/sync/status`
@@ -118,8 +122,19 @@ thresholds live in the `targets` table and are editable via `PUT /admin/targets`
 Set env vars (`MIS_DATABASE_URL`, `FMC_DB_URL`, `AV_DB_URL`, `JWT_SECRET`,
 `CORS_ORIGINS`, `SYNC_INTERVAL_MINUTES`) in the Railway dashboard.
 
+### Partner payouts
+Each FMC sync also full-refreshes `mis_payouts` from the CRM view
+`public.mis_partner_payouts` (one row per lender file that has reached PF paid; the
+partner earns rate × sanctioned loan amount, or a hand-agreed amount, on the PF-paid
+date). `mis_readonly` can read only `leads`, `lead_sources`, `lead_stage_logs` and this
+view — see `scripts/crm_readonly_setup.sql`. Rows from unmapped sources are
+stored with `provider_id = null` and back-stamped when the source is mapped. A payout
+failure is recorded in the sync status but never fails the lead sync, and a failed fetch
+never deletes rows. The MIS reads only that view — never FMC's bank / lender-file / disbursement tables,
+and never FMC's own commission.
+
 ## Phase 2 (reserved, not built)
 
-Payout module (billing model per provider) and dispute/return workflow
+Dispute/return workflow
 (invalid categories, 30-day duplicate window, return-concentration red flag).
 Schema shapes are noted in the build prompt; `providers.payout_config` is reserved.
