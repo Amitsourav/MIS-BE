@@ -53,6 +53,17 @@ _MAPS: dict[Brand, dict[str, CanonicalStage]] = {
 }
 
 
+def raw_stages_for(brand: Brand, canonical: CanonicalStage) -> list[str]:
+    """Every raw CRM stage string (lowercased) that maps to `canonical`.
+    Used to translate canonical filters / milestones into SQL."""
+    return sorted(k for k, v in _MAPS[brand].items() if v == canonical)
+
+
+def known_raw_stages(brand: Brand) -> list[str]:
+    """All raw stages with an explicit mapping (anything else is DELIVERED)."""
+    return sorted(_MAPS[brand])
+
+
 def map_stage(brand: Brand, raw_stage: str | None) -> CanonicalStage:
     """Map a raw CRM stage to canonical. Unknown / null raw stages fall back to
     DELIVERED (every lead is at least 'delivered')."""
@@ -62,7 +73,7 @@ def map_stage(brand: Brand, raw_stage: str | None) -> CanonicalStage:
 
 
 # --- CRM schema assumptions (override here if the real columns differ) ---
-# The sync queries reference these. Adjust per brand without touching SQL logic.
+# The live CRM queries reference these. Adjust per brand without touching SQL logic.
 class CrmSchema:
     leads_table = "public.leads"
     lead_sources_table = "public.lead_sources"
@@ -77,6 +88,7 @@ class CrmSchema:
     lead_stage = "current_stage"
     lead_created = "created_at"
     lead_updated = "updated_at"
+    lead_deleted = "is_deleted"  # soft-deleted leads are excluded everywhere
 
     # lead_sources columns
     source_id = "id"

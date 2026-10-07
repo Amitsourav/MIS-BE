@@ -33,9 +33,9 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 720
 
-    # --- Sync ---
-    sync_interval_minutes: int = 45
-    sync_enabled: bool = True
+    # --- Live CRM reads ---
+    crm_pool_max_size: int = 5
+    crm_query_timeout_sec: float = 30.0
     duplicate_window_days: int = 30
 
     # --- CORS ---

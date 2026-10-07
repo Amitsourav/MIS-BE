@@ -1,80 +1,70 @@
-"""Unmapped leads are stored with provider_id=null and get backfilled (claimed +
-rolled up) when their CRM source is later mapped to a provider."""
+"""Mapping a CRM source makes its existing leads and payouts visible to the
+provider immediately — data is live, so there is no backfill step to run."""
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
 
 import pytest
 
-from app.models import MisLead
-from app.models.enums import Brand, CanonicalStage
-from app.services.rollup import claim_unmapped_leads, recompute_cohorts
-from tests.factories import make_provider
+from app.core.security import create_access_token, hash_password
+from app.models import AdminUser
+from app.models.enums import Brand
+from tests.factories import lead_row, make_provider, payout_row, provider_headers
 
 pytestmark = pytest.mark.asyncio
 
 
-async def _add_unmapped_lead(db, *, brand, crm_source_id, phone="9000000001"):
-    lead = MisLead(
-        brand=brand,
-        crm_lead_id=uuid.uuid4(),
-        provider_id=None,  # unmapped
-        crm_source_id=crm_source_id,
-        full_name="Orphan Lead",
-        phone=phone,
-        canonical_stage=CanonicalStage.QUALIFIED,
-        created_at=datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc),
-        qualified_at=datetime(2026, 6, 1, 13, 0, tzinfo=timezone.utc),
-    )
-    db.add(lead)
+async def _fmc_admin_headers(db) -> dict:
+    admin = AdminUser(email="fmcadmin@x.com", password_hash=hash_password("pw"), brand=Brand.FMC)
+    db.add(admin)
     await db.commit()
-    return lead
+    await db.refresh(admin)
+    token = create_access_token(subject=str(admin.id), role="admin", brand="fmc")
+    return {"Authorization": f"Bearer {token}"}
 
 
-async def test_claim_backfills_and_rolls_up(client, db):
-    provider = await make_provider(db, "Acme", "acme@x.com", brand=Brand.FMC)
-    source_id = uuid.uuid4()
-    await _add_unmapped_lead(db, brand=Brand.FMC, crm_source_id=source_id)
-    await _add_unmapped_lead(db, brand=Brand.FMC, crm_source_id=source_id, phone="9000000002")
+async def test_mapping_a_source_shows_its_leads_and_payouts_at_once(client, db, crm):
+    provider = await make_provider(db, "Altera", "alt@x.com")
+    src = uuid.uuid4()
+    crm.leads[Brand.FMC] = [lead_row(src, phone="9000000001"), lead_row(src, phone="9000000002")]
+    crm.payouts = [payout_row(src), payout_row(src, bank="SBI")]
+    headers = provider_headers(provider)
 
-    claimed = await claim_unmapped_leads(
-        db, provider_id=provider.id, brand=Brand.FMC, crm_source_id=source_id
+    before = await client.get("/me/leads?from=2026-06-01&to=2026-06-02", headers=headers)
+    assert before.json()["total"] == 0  # not mapped yet
+
+    res = await client.post(
+        f"/admin/providers/{provider.id}/sources",
+        headers=await _fmc_admin_headers(db),
+        json={"brand": "fmc", "crm_source_id": str(src)},
     )
-    await db.commit()
-    assert claimed == 2
+    assert res.status_code == 201
 
-    # Leads now belong to the provider and show up in their scoped overview.
-    from app.core.security import create_access_token
-
-    token = create_access_token(
-        subject="u", role="provider", provider_id=str(provider.id)
-    )
-    res = await client.get(
-        "/me/overview?from=2026-06-01&to=2026-06-02",
-        headers={"Authorization": f"Bearer {token}"},
-    )
-    assert res.status_code == 200
-    assert res.json()["funnel"]["delivered"] == 2  # rolled up after backfill
+    after = await client.get("/me/leads?from=2026-06-01&to=2026-06-02", headers=headers)
+    assert after.json()["total"] == 2
+    pay = await client.get("/provider/payouts", headers=headers)
+    assert pay.json()["total"] == 2
 
 
-async def test_claim_ignores_other_sources(client, db):
-    provider = await make_provider(db, "Acme2", "acme2@x.com", brand=Brand.FMC)
-    mine = uuid.uuid4()
-    other = uuid.uuid4()
-    await _add_unmapped_lead(db, brand=Brand.FMC, crm_source_id=mine)
-    await _add_unmapped_lead(db, brand=Brand.FMC, crm_source_id=other, phone="9000000003")
+async def test_unmapped_sources_stay_hidden(client, db, crm):
+    provider = await make_provider(db, "Acme", "acme@x.com")
+    crm.leads[Brand.FMC] = [lead_row(uuid.uuid4())]
+    crm.payouts = [payout_row(uuid.uuid4())]
+    headers = provider_headers(provider)
 
-    claimed = await claim_unmapped_leads(
-        db, provider_id=provider.id, brand=Brand.FMC, crm_source_id=mine
-    )
-    await db.commit()
-    assert claimed == 1  # only the matching source's lead
+    assert (await client.get("/me/leads?all_time=true", headers=headers)).json()["total"] == 0
+    assert (await client.get("/provider/payouts", headers=headers)).json()["total"] == 0
 
 
-async def test_claim_with_nothing_to_backfill(client, db):
-    provider = await make_provider(db, "Acme3", "acme3@x.com", brand=Brand.FMC)
-    claimed = await claim_unmapped_leads(
-        db, provider_id=provider.id, brand=Brand.FMC, crm_source_id=uuid.uuid4()
-    )
-    assert claimed == 0
+async def test_mapping_an_already_mapped_source_conflicts(client, db, crm):
+    a = await make_provider(db, "A", "a@x.com")
+    b = await make_provider(db, "B", "b@x.com")
+    headers = await _fmc_admin_headers(db)
+    src = str(uuid.uuid4())
+
+    first = await client.post(f"/admin/providers/{a.id}/sources", headers=headers,
+                              json={"brand": "fmc", "crm_source_id": src})
+    assert first.status_code == 201
+    second = await client.post(f"/admin/providers/{b.id}/sources", headers=headers,
+                               json={"brand": "fmc", "crm_source_id": src})
+    assert second.status_code == 409

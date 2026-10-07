@@ -1,7 +1,7 @@
 """Async SQLAlchemy engine + session for the MIS's own Postgres.
 
 This module is ONLY for the MIS database (read/write). CRM connections are
-read-only and live in `app.sync.connectors` — they never touch this engine.
+read-only and live in `app.crm` — they never touch this engine.
 """
 from __future__ import annotations
 

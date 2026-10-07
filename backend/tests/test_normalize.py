@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from app.models.enums import Brand, CanonicalStage
 from app.services.scorecard import compute_scorecard
-from app.sync.normalize import normalize_phone, validate_phone
-from app.sync.stage_map import map_stage
+from app.crm.normalize import normalize_phone, validate_phone
+from app.crm.stage_map import map_stage
 
 
 def test_stage_mapping_both_brands():

@@ -363,7 +363,8 @@ lib/use-filters.ts                           # only if needed for "All time" / d
 - A partner only sees rows from FMC sources that an admin has **mapped** to them.
   If a test partner sees "No earnings yet", check their source mapping before
   suspecting the frontend.
-- Payouts refresh on each FMC sync. An admin can force one from the Sync page.
+- Data is **live**: the backend reads the CRM on every request, so a change in the
+  CRM shows on the next refresh. `data_as_of` is simply the request time.
 
 ---
 

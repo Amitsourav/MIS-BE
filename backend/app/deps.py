@@ -40,8 +40,10 @@ class Principal:
     #   - admin: None = super-admin (both companies); Brand = company admin
     #   - provider: the single company the vendor belongs to
     brand: Brand | None = None
-    # Source ids belonging to this provider (loaded lazily for provider routes).
+    # The provider's mapped CRM source ids (in its own company) and their
+    # display names — the ONLY scope any live CRM query may use.
     source_ids: list[uuid.UUID] = field(default_factory=list)
+    source_names: dict[uuid.UUID, str | None] = field(default_factory=dict)
 
     @property
     def is_super_admin(self) -> bool:
@@ -115,9 +117,11 @@ async def require_provider(
 
     principal.brand = provider.brand  # the vendor's single company
     rows = await db.execute(
-        select(ProviderSource.crm_source_id).where(
-            ProviderSource.provider_id == principal.provider_id
+        select(ProviderSource.crm_source_id, ProviderSource.source_name).where(
+            ProviderSource.provider_id == principal.provider_id,
+            ProviderSource.brand == provider.brand,
         )
     )
-    principal.source_ids = [r[0] for r in rows.all()]
+    principal.source_names = {sid: name for sid, name in rows.all()}
+    principal.source_ids = list(principal.source_names)
     return principal

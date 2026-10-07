@@ -1,12 +1,12 @@
 """Admin-facing endpoints (role=admin): provider/user/source management,
-leaderboard, targets, and sync control."""
+leaderboard, targets, and live-data status. Lead and payout numbers are read
+live from the CRMs on every request."""
 from __future__ import annotations
 
-import asyncio
 import logging
 import secrets
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, or_, select
@@ -45,11 +45,10 @@ from app.schemas.sync import (
 )
 from app.schemas.payout import PayoutsResponse
 from app.schemas.target import TargetOut, TargetsBulkUpdate
-from app.models import SyncState
+from app.crm import reader
+from app.services import live, payouts
 from app.services import metrics as M
-from app.services import payouts, rollup
 from app.services.scorecard import compute_scorecard, load_targets
-from app.sync import connectors, worker
 
 logger = logging.getLogger("mis.admin")
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -258,25 +257,12 @@ async def map_source(
             409, "This CRM source is already mapped to a provider"
         )
 
-    # Backfill: claim any leads already pulled from this source before it was
-    # mapped, attributing them to the provider and rebuilding their rollups.
-    claimed = await rollup.claim_unmapped_leads(
-        db,
-        provider_id=provider_id,
-        brand=body.brand,
-        crm_source_id=body.crm_source_id,
-    )
-    payouts_claimed = await payouts.claim_unmapped_payouts(
-        db,
-        provider_id=provider_id,
-        brand=body.brand,
-        crm_source_id=body.crm_source_id,
-    )
+    # No backfill needed: data is read live, so the provider sees this
+    # source's leads and payouts on their very next request.
     await db.commit()
     await db.refresh(mapping)
     _audit(principal, "map_source", provider_id=str(provider_id),
-           brand=body.brand.value, crm_source_id=str(body.crm_source_id),
-           backfilled=claimed, payouts_backfilled=payouts_claimed)
+           brand=body.brand.value, crm_source_id=str(body.crm_source_id))
     return ProviderSourceOut.model_validate(mapping)
 
 
@@ -306,10 +292,15 @@ async def provider_payouts(
     """The provider's Payout page as an admin sees it. Out-of-scope providers
     404; an AV provider returns brand_supported=false."""
     provider = await _get_scoped_provider(db, principal, provider_id)
+    rows = await db.execute(
+        select(ProviderSource.crm_source_id).where(
+            ProviderSource.provider_id == provider.id,
+            ProviderSource.brand == provider.brand,
+        )
+    )
     return await payouts.build_payouts_page(
-        db,
-        provider_id=provider.id,
         provider_brand=provider.brand,
+        source_ids=[r[0] for r in rows.all()],
         date_from=date_from,
         date_to=date_to,
         page=page,
@@ -325,10 +316,7 @@ async def crm_sources(
 ) -> list[CrmSourceOut]:
     """Read-only proxy of a CRM's lead_sources, annotated with current mapping."""
     _assert_brand(principal, brand)
-    try:
-        sources = await connectors.list_lead_sources(brand)
-    except connectors.CrmUnavailable as exc:
-        raise HTTPException(503, str(exc))
+    sources = await reader.lead_sources(brand)  # CrmUnavailable -> 503 (main.py)
 
     mapped = await db.execute(
         select(ProviderSource.crm_source_id, Provider.name)
@@ -354,54 +342,85 @@ async def leaderboard(
     principal: Principal = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ) -> list[LeaderboardRow]:
-    from app.api.provider import _range, _volume_reliability  # reuse helpers
+    from app.api.provider import _range  # reuse the default-range rule
 
     frm, to = _range(date_from, date_to)
-    # Cache each company's flattened targets so a company admin (and the
-    # super-admin's cross-company board) score each vendor by its own company.
-    targets_by_brand = {b: await load_targets(db, b) for b in principal.admin_brands()}
-
-    providers = (
-        await db.execute(
-            select(Provider).where(Provider.brand.in_(principal.admin_brands()))
-        )
-    ).scalars().all()
     rows: list[LeaderboardRow] = []
-    for p in providers:
-        brands = [p.brand]  # each vendor belongs to exactly one company
-        agg = await M.sum_rollups(db, p.id, brands, frm, to)
-        if agg["delivered"] == 0:
+    for brand in principal.admin_brands():
+        # Score each vendor by its own company's targets.
+        targets = await load_targets(db, brand)
+        mapped = await db.execute(
+            select(Provider, ProviderSource.crm_source_id)
+            .join(ProviderSource, ProviderSource.provider_id == Provider.id)
+            .where(Provider.brand == brand, ProviderSource.brand == brand)
+        )
+        provider_by_source: dict[uuid.UUID, Provider] = {}
+        for p, sid in mapped.all():
+            provider_by_source[sid] = p
+        if not provider_by_source:
             continue
-        validity = M.safe_div(agg["valid"], agg["delivered"])
-        qual_rate = M.safe_div(agg["qualified"], agg["valid"])
-        conv_rate = M.safe_div(agg["converted"], agg["valid"])
-        reliability = await _volume_reliability(db, p.id, brands, frm, to)
-        sc = compute_scorecard(
-            {
-                "validity": validity,
-                "qualification_rate": qual_rate,
-                "conversion_rate": conv_rate,
-                "volume_reliability": reliability,
-                "dispute_rate": 0.0,
-            },
-            targets_by_brand[p.brand],
-        )
-        rows.append(
-            LeaderboardRow(
-                provider_id=p.id,
-                provider_name=p.name,
-                delivered=agg["delivered"],
-                valid=agg["valid"],
-                qualified=agg["qualified"],
-                converted=agg["converted"],
-                qualification_rate=qual_rate,
-                conversion_rate=conv_rate,
-                score_pct=sc.score_pct,
-                grade=sc.grade,
+
+        # One live query per company for every mapped source, then group.
+        facts = await live.lead_facts(brand, list(provider_by_source), frm, to)
+        by_provider: dict[uuid.UUID, list[live.LeadFact]] = {}
+        for f in facts:
+            p = provider_by_source.get(f.crm_source_id)
+            if p is not None:
+                by_provider.setdefault(p.id, []).append(f)
+        names = {p.id: p.name for p in provider_by_source.values()}
+
+        for pid, pfacts in by_provider.items():
+            agg = M.aggregate(pfacts)
+            if agg["delivered"] == 0:
+                continue
+            validity = M.safe_div(agg["valid"], agg["delivered"])
+            qual_rate = M.safe_div(agg["qualified"], agg["valid"])
+            conv_rate = M.safe_div(agg["converted"], agg["valid"])
+            reliability = M.volume_reliability(pfacts, frm, to)
+            rows.append(
+                _leaderboard_row(
+                    pid, names[pid], agg, targets,
+                    validity=validity, qual_rate=qual_rate,
+                    conv_rate=conv_rate, reliability=reliability,
+                )
             )
-        )
     rows.sort(key=lambda r: r.score_pct, reverse=True)
     return rows
+
+
+def _leaderboard_row(
+    provider_id: uuid.UUID,
+    provider_name: str,
+    agg: dict[str, int],
+    targets: dict[str, float],
+    *,
+    validity: float,
+    qual_rate: float,
+    conv_rate: float,
+    reliability: float,
+) -> LeaderboardRow:
+    sc = compute_scorecard(
+        {
+            "validity": validity,
+            "qualification_rate": qual_rate,
+            "conversion_rate": conv_rate,
+            "volume_reliability": reliability,
+            "dispute_rate": 0.0,
+        },
+        targets,
+    )
+    return LeaderboardRow(
+        provider_id=provider_id,
+        provider_name=provider_name,
+        delivered=agg["delivered"],
+        valid=agg["valid"],
+        qualified=agg["qualified"],
+        converted=agg["converted"],
+        qualification_rate=qual_rate,
+        conversion_rate=conv_rate,
+        score_pct=sc.score_pct,
+        grade=sc.grade,
+    )
 
 
 # ---------------- Targets ----------------
@@ -450,40 +469,28 @@ async def put_targets(
     return await get_targets(principal, db)
 
 
-# ---------------- Sync control ----------------
+# ---------------- Live-data status (former sync control) ----------------
+# There is no sync any more: every page reads the CRMs live. These two routes
+# stay so existing clients keep working; they report "live" and never start
+# anything.
+_LIVE_DETAIL = "Data is live: every page reads the CRM directly, so no sync is needed."
+
+
 @router.post("/sync/run", response_model=SyncRunResponse)
 async def run_sync_now(
     brand: Brand | None = None,
     principal: Principal = Depends(require_admin),
 ) -> SyncRunResponse:
-    if worker.is_running():
-        return SyncRunResponse(triggered=False, detail="A sync is already running")
     if brand is not None:
         _assert_brand(principal, brand)
-        brands = [brand]
-    else:
-        # A company admin can only run their own company; super-admin runs all.
-        brands = principal.admin_brands()
-    # Fire-and-forget; status is observable via /admin/sync/status.
-    asyncio.create_task(worker.run_sync(brands))
-    _audit(principal, "run_sync", brand=brand.value if brand else "all-in-scope")
-    return SyncRunResponse(triggered=True, detail="Sync started")
+    return SyncRunResponse(triggered=False, detail=_LIVE_DETAIL)
 
 
 @router.get("/sync/status", response_model=SyncStatusResponse)
-async def sync_status(
-    principal: Principal = Depends(require_admin), db: AsyncSession = Depends(get_db)
-) -> SyncStatusResponse:
-    rows = await db.execute(
-        select(SyncState).where(SyncState.brand.in_(principal.admin_brands()))
-    )
+async def sync_status(principal: Principal = Depends(require_admin)) -> SyncStatusResponse:
+    now = datetime.now(timezone.utc)
     states = [
-        SyncStateOut(
-            brand=s.brand,
-            last_watermark=s.last_watermark,
-            last_run_at=s.last_run_at,
-            last_status=s.last_status,
-        )
-        for s in rows.scalars().all()
+        SyncStateOut(brand=b, last_watermark=None, last_run_at=now, last_status="live")
+        for b in principal.admin_brands()
     ]
-    return SyncStatusResponse(states=states, running=worker.is_running())
+    return SyncStatusResponse(states=states, running=False)
