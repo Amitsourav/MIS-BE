@@ -15,7 +15,8 @@ from app.database import get_db
 from app.deps import Principal, require_provider
 from app.models.enums import Brand, CanonicalStage
 from app.schemas.common import Page
-from app.schemas.lead import LeadOut
+from app.crm.stage_map import crm_stage_label, crm_stage_order, crm_stage_value
+from app.schemas.lead import CrmStageCount, LeadOut
 from app.schemas.metrics import (
     BrandSplitResponse,
     BrandSplitRow,
@@ -150,9 +151,12 @@ async def quality(
 
 # --- per-lead table ---
 async def _filtered_leads(
-    principal: Principal, brand, stage, date_from, date_to, q, all_time
+    principal: Principal, brand, stage, date_from, date_to, q, all_time, crm_stage=None
 ) -> list[live.LeadFact]:
     """The caller's leads after every filter, newest first.
+
+    `stage` filters on the MIS funnel bucket; `crm_stage` on the exact CRM
+    stage (e.g. "pf_paid"), matching what the CRM team sees.
 
     When `all_time` is True the created_at window is skipped entirely, so the
     table returns every lead the provider has (the "All leads" filter).
@@ -166,6 +170,9 @@ async def _filtered_leads(
     facts = await _facts(principal, brand, frm, to)
     if stage is not None:
         facts = [f for f in facts if f.canonical_stage == stage]
+    wanted = crm_stage_value(crm_stage)
+    if wanted is not None:
+        facts = [f for f in facts if crm_stage_value(f.raw_stage) == wanted]
     if q and q.strip():
         needle = q.strip().lower()
         facts = [
@@ -186,6 +193,8 @@ def _lead_out(principal: Principal, f: live.LeadFact) -> LeadOut:
         brand=f.brand,
         source_name=principal.source_names.get(f.crm_source_id),
         canonical_stage=f.canonical_stage,
+        crm_stage=crm_stage_value(f.raw_stage),
+        crm_stage_label=crm_stage_label(f.brand, f.raw_stage),
         is_invalid=f.is_invalid,
         is_duplicate=f.is_duplicate,
         created_at=f.created_at,
@@ -196,6 +205,7 @@ def _lead_out(principal: Principal, f: live.LeadFact) -> LeadOut:
 async def leads(
     brand: str | None = None,
     stage: str | None = None,
+    crm_stage: str | None = None,
     date_from: date | None = Query(None, alias="from"),
     date_to: date | None = Query(None, alias="to"),
     q: str | None = None,
@@ -204,7 +214,9 @@ async def leads(
     page_size: int = Query(50, ge=1, le=200),
     principal: Principal = Depends(require_provider),
 ) -> Page[LeadOut]:
-    facts = await _filtered_leads(principal, brand, stage, date_from, date_to, q, all_time)
+    facts = await _filtered_leads(
+        principal, brand, stage, date_from, date_to, q, all_time, crm_stage
+    )
     window = facts[(page - 1) * page_size : page * page_size]
     return Page(
         items=[_lead_out(principal, f) for f in window],
@@ -214,23 +226,48 @@ async def leads(
     )
 
 
+@router.get("/stages", response_model=list[CrmStageCount])
+async def stages(
+    brand: str | None = None,
+    date_from: date | None = Query(None, alias="from"),
+    date_to: date | None = Query(None, alias="to"),
+    all_time: bool = Query(False),
+    principal: Principal = Depends(require_provider),
+) -> list[CrmStageCount]:
+    """The CRM stages the caller's leads are in right now, with counts, in the
+    CRM's pipeline order — for the Leads stage filter."""
+    frm, to = (None, None) if all_time else _range(date_from, date_to)
+    counts: dict[str, int] = {}
+    for f in await _facts(principal, brand, frm, to):
+        value = crm_stage_value(f.raw_stage)
+        if value is not None:
+            counts[value] = counts.get(value, 0) + 1
+    return [
+        CrmStageCount(value=v, label=crm_stage_label(principal.brand, v), count=n)
+        for v, n in sorted(counts.items(), key=lambda kv: crm_stage_order(principal.brand, kv[0]))
+    ]
+
+
 @router.get("/leads/export")
 async def leads_export(
     brand: str | None = None,
     stage: str | None = None,
+    crm_stage: str | None = None,
     date_from: date | None = Query(None, alias="from"),
     date_to: date | None = Query(None, alias="to"),
     q: str | None = None,
     all_time: bool = Query(False),
     principal: Principal = Depends(require_provider),
 ) -> StreamingResponse:
-    facts = await _filtered_leads(principal, brand, stage, date_from, date_to, q, all_time)
+    facts = await _filtered_leads(
+        principal, brand, stage, date_from, date_to, q, all_time, crm_stage
+    )
 
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(
         ["serial_no", "full_name", "phone", "brand", "source", "stage",
-         "is_invalid", "is_duplicate", "created_at"]
+         "funnel_stage", "is_invalid", "is_duplicate", "created_at"]
     )
     for f in facts[:_EXPORT_LIMIT]:
         writer.writerow(
@@ -240,6 +277,7 @@ async def leads_export(
                 f.phone or "",
                 f.brand.value,
                 principal.source_names.get(f.crm_source_id) or "",
+                crm_stage_label(f.brand, f.raw_stage) or "",
                 f.canonical_stage.value,
                 f.is_invalid,
                 f.is_duplicate,

@@ -24,7 +24,17 @@ class LeadOut(BaseModel):
     phone: str | None
     brand: Brand
     source_name: str | None = None
-    canonical_stage: CanonicalStage
+    canonical_stage: CanonicalStage  # MIS funnel bucket (for charts)
+    crm_stage: str | None = None  # the lead's current CRM stage, as stored
+    crm_stage_label: str | None = None  # the CRM's own name for it, e.g. "PF Paid"
     is_invalid: bool
     is_duplicate: bool
     created_at: datetime | None
+
+
+class CrmStageCount(BaseModel):
+    """One CRM stage in the provider's Leads filter, in CRM pipeline order."""
+
+    value: str
+    label: str
+    count: int

@@ -177,3 +177,56 @@ async def test_crm_outage_is_a_503(client, db, crm):
     res = await client.get(f"/me/overview?{RANGE}", headers=provider_headers(p))
     assert res.status_code == 503
     assert "unavailable" in res.json()["detail"]
+
+
+async def test_leads_show_the_crm_stage_name(client, db, crm):
+    p, _ = await _setup(db, crm, lambda s: [
+        lead_row(s, phone="9000000001", raw_stage="pf_paid", created_at=D1),
+        lead_row(s, phone="9000000002", raw_stage="docs_pending", created_at=D1),
+        lead_row(s, phone="9000000003", raw_stage="sanctioned", created_at=D2),
+        lead_row(s, phone="9000000004", raw_stage="created", created_at=D2),
+        lead_row(s, phone="9000000005", raw_stage="pf_paid", created_at=D2),
+        lead_row(s, phone="9000000006", raw_stage="brand_new_stage", created_at=D2),
+        lead_row(s, phone="9000000007", raw_stage=None, created_at=D2),
+    ])
+    h = provider_headers(p)
+    items = (await client.get(f"/me/leads?{RANGE}", headers=h)).json()["items"]
+    by_stage = {i["crm_stage"]: i for i in items}
+    assert by_stage["pf_paid"]["crm_stage_label"] == "PF Paid"
+    assert by_stage["pf_paid"]["canonical_stage"] == "in_process"  # funnel bucket unchanged
+    assert by_stage["docs_pending"]["crm_stage_label"] == "Docs Pending"
+    assert by_stage["docs_pending"]["canonical_stage"] == "in_process"  # was mis-keyed
+    assert by_stage["created"]["crm_stage_label"] == "Created"
+    assert by_stage["brand_new_stage"]["crm_stage_label"] == "Brand New Stage"
+    assert by_stage[None]["crm_stage_label"] is None
+
+    only = (await client.get(f"/me/leads?{RANGE}&crm_stage=pf_paid", headers=h)).json()
+    assert only["total"] == 2 and {i["crm_stage"] for i in only["items"]} == {"pf_paid"}
+
+    stages = (await client.get(f"/me/stages?{RANGE}", headers=h)).json()
+    assert stages == [  # CRM pipeline order, unknown stages last, no-stage leads skipped
+        {"value": "created", "label": "Created", "count": 1},
+        {"value": "docs_pending", "label": "Docs Pending", "count": 1},
+        {"value": "sanctioned", "label": "Sanctioned", "count": 1},
+        {"value": "pf_paid", "label": "PF Paid", "count": 2},
+        {"value": "brand_new_stage", "label": "Brand New Stage", "count": 1},
+    ]
+
+    csv_lines = (await client.get(f"/me/leads/export?{RANGE}&crm_stage=sanctioned",
+                                  headers=h)).text.strip().splitlines()
+    assert csv_lines[0].split(",")[5:7] == ["stage", "funnel_stage"]
+    assert csv_lines[1].split(",")[5:7] == ["Sanctioned", "in_process"]
+
+
+async def test_av_leads_use_admitverse_stage_names(client, db, crm):
+    p = await make_provider(db, "AVP", "avp@x.com", brand=Brand.AV)
+    src = await map_source(db, p)
+    crm.leads[Brand.AV] = [
+        lead_row(src, phone="9000000001", raw_stage="qualified"),
+        lead_row(src, phone="9000000002", raw_stage="dnp_pre_qualified"),
+        lead_row(src, phone="9000000003", raw_stage="warm"),
+    ]
+    items = (await client.get(f"/me/leads?{RANGE}", headers=provider_headers(p))).json()["items"]
+    assert {i["crm_stage"]: i["crm_stage_label"] for i in items} == {
+        "qualified": "Hot", "dnp_pre_qualified": "DNP", "warm": "Warm",
+    }
