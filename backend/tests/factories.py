@@ -3,7 +3,7 @@ for the in-memory fake CRM (see the `crm` fixture in conftest.py)."""
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from app.core.security import create_access_token, hash_password
@@ -96,6 +96,9 @@ def payout_row(
     serial_no: int | None = None,
     full_name: str | None = None,
     released: date | None = None,  # last_disbursed_on; defaults to pf
+    tds: str = "0.00",
+    invoice_status: str | None = None,
+    invoice_due: date | None = None,
 ) -> dict:
     """A row shaped like `app.crm.reader.payout_rows` output (the FMC view
     plus the student's serial/name from the leads table)."""
@@ -119,4 +122,11 @@ def payout_row(
         "updated_at": datetime(2026, 9, 30, 10, tzinfo=timezone.utc),
         "serial_no": serial_no,
         "full_name": full_name,
+        "payout_tds": Decimal(tds),
+        "payout_net": Decimal(paid) - Decimal(tds),
+        "payout_paid_on": None,
+        "partner_invoice_number": "INV-1" if invoice_status else None,
+        "partner_invoice_date": invoice_due - timedelta(days=15) if invoice_due else None,
+        "partner_invoice_due_date": invoice_due,
+        "partner_invoice_status": invoice_status,
     }

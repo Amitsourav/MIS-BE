@@ -11,7 +11,7 @@ done here on the scoped rows.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
@@ -29,6 +29,12 @@ from app.schemas.payout import (
 PAYOUT_BRANDS: frozenset[Brand] = frozenset({Brand.FMC})
 
 _CENT = Decimal("0.01")
+# India has no DST, so a fixed offset gives the business date for "overdue".
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _today() -> date:
+    return datetime.now(_IST).date()
 
 
 def _exact(value: Any) -> Decimal:
@@ -58,23 +64,46 @@ def _overpaid(r: dict[str, Any]) -> Decimal:
     return max(_exact(r.get("payout_paid")) - _exact(r.get("payout_earned")), Decimal("0"))
 
 
+def _invoice_state(r: dict[str, Any], today: date) -> str:
+    """Which pie slice this row's pending money belongs to. Only an invoice
+    still 'raised' covers it; a 'paid' latest invoice means anything pending
+    came from later releases, and 'cancelled' covers nothing."""
+    if (r.get("partner_invoice_status") or "").lower() != "raised":
+        return "not_raised"
+    due = r.get("partner_invoice_due_date")
+    return "overdue" if due is not None and due < today else "raised"
+
+
 def _summary(rows: list[dict[str, Any]]) -> PayoutSummary:
     """Totals over the exact CRM values, rounded once at the end (so many
     sub-paisa rows can't drift from the true total)."""
-    def total(key: str) -> Decimal:
-        return sum((_exact(r.get(key)) for r in rows), Decimal("0")).quantize(
+    def total(key: str, keep=lambda r: True) -> Decimal:
+        return sum((_exact(r.get(key)) for r in rows if keep(r)), Decimal("0")).quantize(
             _CENT, rounding=ROUND_HALF_UP
         )
+
+    today = _today()
+
+    def pending_in(state: str) -> Decimal:
+        return total("payout_pending", lambda r: _invoice_state(r, today) == state)
+
+    paid, tds = total("payout_paid"), total("payout_tds")
 
     return PayoutSummary(
         students=len({r["lead_id"] for r in rows}),
         loan_total=total("loan_amount"),
         earned=total("payout_earned"),
-        paid=total("payout_paid"),
+        paid=paid,
         pending=total("payout_pending"),
         overpaid=sum((_overpaid(r) for r in rows), Decimal("0")).quantize(
             _CENT, rounding=ROUND_HALF_UP
         ),
+        # Net from the same exact totals, so cash + TDS always equals paid.
+        cash_transferred=paid - tds,
+        tds=tds,
+        invoice_not_raised=pending_in("not_raised"),
+        invoice_raised=pending_in("raised"),
+        invoice_overdue=pending_in("overdue"),
     )
 
 
@@ -101,6 +130,14 @@ def _item_fields(r: dict[str, Any]) -> dict[str, Any]:
         paid=_money(r.get("payout_paid")),
         pending=_money(r.get("payout_pending")),
         overpaid=_overpaid(r).quantize(_CENT, rounding=ROUND_HALF_UP),
+        tds=_money(r.get("payout_tds")),
+        net_paid=_money(r.get("payout_paid")) - _money(r.get("payout_tds")),
+        paid_on=r.get("payout_paid_on"),
+        invoice_number=r.get("partner_invoice_number"),
+        invoice_date=r.get("partner_invoice_date"),
+        invoice_due_date=r.get("partner_invoice_due_date"),
+        invoice_status=r.get("partner_invoice_status"),
+        invoice_state=_invoice_state(r, _today()),
     )
 
 
