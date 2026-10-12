@@ -66,6 +66,10 @@ class ProviderUser(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # Set on an admin password reset; tokens issued before it are rejected.
+    password_changed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     provider: Mapped["Provider"] = relationship(back_populates="users")
 

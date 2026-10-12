@@ -138,6 +138,29 @@ async def payout_rows(
     return [dict(r) for r in rows]
 
 
+_UNMAPPED_PAYOUT_SQL = """
+    SELECT
+        p.lead_bank_id, p.lead_id, p.lead_source_id, p.bank_name, p.loan_amount,
+        p.pf_paid_on, p.disbursed_total, p.payout_basis, p.payout_rate,
+        p.payout_earned, p.payout_paid, p.payout_pending, p.updated_at,
+        l.serial_no, l.full_name, s.name AS source_name
+    FROM public.mis_partner_payouts p
+    LEFT JOIN public.leads l ON l.id = p.lead_id
+    LEFT JOIN public.lead_sources s ON s.id = p.lead_source_id
+    WHERE p.lead_source_id IS NULL OR NOT (p.lead_source_id = ANY($1::uuid[]))
+"""
+
+
+async def payout_rows_unmapped(
+    brand: Brand, mapped_source_ids: list[uuid.UUID]
+) -> list[dict[str, Any]]:
+    """FMC payouts whose source is in none of `mapped_source_ids` (admin view)."""
+    if brand != Brand.FMC:
+        return []
+    rows = await pool.fetch(brand, _UNMAPPED_PAYOUT_SQL, list(mapped_source_ids))
+    return [dict(r) for r in rows]
+
+
 async def lead_sources(brand: Brand) -> list[dict[str, Any]]:
     """All lead_sources, for the admin mapping picker."""
     s = CRM_SCHEMAS[brand]

@@ -17,15 +17,15 @@ async def make_provider(
     provider = Provider(name=name, brand=brand)
     db.add(provider)
     await db.flush()
-    db.add(
-        ProviderUser(
-            provider_id=provider.id,
-            email=email,
-            password_hash=hash_password(password),
-        )
+    user = ProviderUser(
+        provider_id=provider.id,
+        email=email,
+        password_hash=hash_password(password),
     )
+    db.add(user)
     await db.commit()
     await db.refresh(provider)
+    provider._test_user_id = user.id  # the login provider_headers signs in as
     return provider
 
 
@@ -42,7 +42,7 @@ async def map_source(
 
 def provider_headers(provider: Provider) -> dict:
     token = create_access_token(
-        subject="u-" + str(provider.id), role="provider", provider_id=str(provider.id)
+        subject=str(provider._test_user_id), role="provider", provider_id=str(provider.id)
     )
     return {"Authorization": f"Bearer {token}"}
 

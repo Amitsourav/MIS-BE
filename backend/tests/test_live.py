@@ -122,6 +122,8 @@ async def test_leads_table_filters_paging_and_shape(client, db, crm):
     assert bad.status_code == 422
 
     csv_text = (await client.get(f"/me/leads/export?{RANGE}", headers=h)).text
+    assert csv_text.startswith("\ufeff")  # BOM so Excel reads UTF-8
+    csv_text = csv_text.lstrip("\ufeff")
     assert csv_text.splitlines()[0].startswith("serial_no,full_name,phone,brand,source,stage")
     assert len(csv_text.strip().splitlines()) == 3
 
@@ -213,7 +215,7 @@ async def test_leads_show_the_crm_stage_name(client, db, crm):
     ]
 
     csv_lines = (await client.get(f"/me/leads/export?{RANGE}&crm_stage=sanctioned",
-                                  headers=h)).text.strip().splitlines()
+                                  headers=h)).text.lstrip("\ufeff").strip().splitlines()
     assert csv_lines[0].split(",")[5:7] == ["stage", "funnel_stage"]
     assert csv_lines[1].split(",")[5:7] == ["Sanctioned", "in_process"]
 

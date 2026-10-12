@@ -89,9 +89,29 @@ class FakeCrm:
             and (date_to is None or (r["pf_paid_on"] and r["pf_paid_on"] <= date_to))
         ]
 
+    async def payout_rows_unmapped(self, brand, mapped_source_ids):
+        self._check()
+        self.calls.append(("payout_rows_unmapped", brand, list(mapped_source_ids)))
+        from app.models.enums import Brand
+        if brand != Brand.FMC:
+            return []
+        mapped = set(mapped_source_ids)
+        names = {s["crm_source_id"]: s["name"] for s in self.sources.get(brand, [])}
+        return [
+            {**r, "source_name": names.get(r["lead_source_id"])}
+            for r in self.payouts if r["lead_source_id"] not in mapped
+        ]
+
     async def lead_sources(self, brand):
         self._check()
         return list(self.sources.get(brand, []))
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _fresh_login_guard():
+    from app.core.ratelimit import login_guard
+    login_guard.reset()
+    yield
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -102,4 +122,5 @@ async def crm(monkeypatch):
     monkeypatch.setattr(reader, "lead_rows", fake.lead_rows)
     monkeypatch.setattr(reader, "payout_rows", fake.payout_rows)
     monkeypatch.setattr(reader, "lead_sources", fake.lead_sources)
+    monkeypatch.setattr(reader, "payout_rows_unmapped", fake.payout_rows_unmapped)
     return fake

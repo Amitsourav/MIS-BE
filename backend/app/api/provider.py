@@ -3,14 +3,13 @@ live from the CRM on each request, scoped to the caller's mapped CRM sources —
 which come ONLY from the verified JWT via `require_provider`."""
 from __future__ import annotations
 
-import csv
-import io
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.csvsafe import csv_response, safe_text
 from app.database import get_db
 from app.deps import Principal, require_provider
 from app.models.enums import Brand, CanonicalStage
@@ -278,32 +277,25 @@ async def leads_export(
         principal, brand, stage, date_from, date_to, q, all_time, crm_stage
     )
 
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(
+    return csv_response(
         ["serial_no", "full_name", "phone", "brand", "source", "stage",
-         "funnel_stage", "is_invalid", "is_duplicate", "created_at"]
-    )
-    for f in facts[:_EXPORT_LIMIT]:
-        writer.writerow(
+         "funnel_stage", "is_invalid", "is_duplicate", "created_at"],
+        (
             [
                 f.serial_no or "",
-                f.full_name or "",
+                safe_text(f.full_name or ""),
                 f.phone or "",
                 f.brand.value,
-                principal.source_names.get(f.crm_source_id) or "",
+                safe_text(principal.source_names.get(f.crm_source_id) or ""),
                 crm_stage_label(f.brand, f.raw_stage) or "",
                 f.canonical_stage.value,
                 f.is_invalid,
                 f.is_duplicate,
                 f.created_at.isoformat() if f.created_at else "",
             ]
-        )
-    buf.seek(0)
-    return StreamingResponse(
-        iter([buf.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=leads.csv"},
+            for f in facts[:_EXPORT_LIMIT]
+        ),
+        "leads.csv",
     )
 
 
@@ -345,20 +337,14 @@ async def payouts_export(
         date_from=date_from,
         date_to=date_to,
     )
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-    writer.writerow(
-        ["serial_no", "full_name", "bank_name", "loan_amount", "pf_paid_on",
-         "disbursed_total", "payout_basis", "payout_rate", "earned", "paid",
-         "pending"]
-    )
+    rows = []
     for it in items:
         row = it.model_dump(mode="json")
-        writer.writerow(
+        rows.append(
             [
                 row["serial_no"] or "",
-                row["full_name"] or "",
-                row["bank_name"] or "",
+                safe_text(row["full_name"] or ""),
+                safe_text(row["bank_name"] or ""),
                 row["loan_amount"] or "",
                 row["pf_paid_on"] or "",
                 row["disbursed_total"],
@@ -367,11 +353,13 @@ async def payouts_export(
                 row["earned"],
                 row["paid"],
                 row["pending"],
+                row["overpaid"],
             ]
         )
-    buf.seek(0)
-    return StreamingResponse(
-        iter([buf.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=payouts.csv"},
+    return csv_response(
+        ["serial_no", "full_name", "bank_name", "loan_amount", "pf_paid_on",
+         "disbursed_total", "payout_basis", "payout_rate", "earned", "paid",
+         "pending", "overpaid"],
+        rows,
+        "payouts.csv",
     )

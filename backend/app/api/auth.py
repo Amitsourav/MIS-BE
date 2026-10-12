@@ -14,7 +14,7 @@ from app.database import get_db
 from app.deps import Principal, get_principal
 from app.models import AdminUser, Provider, ProviderUser
 from app.schemas.auth import LoginRequest, MeResponse, TokenResponse
-from app.core.ratelimit import limiter
+from app.core.ratelimit import LOGIN_IP_LIMIT, limiter, login_guard
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -24,11 +24,13 @@ _BAD_CREDS = HTTPException(
 
 
 @router.post("/login", response_model=TokenResponse)
-@limiter.limit("10/minute")
+@limiter.limit(LOGIN_IP_LIMIT)
 async def login(
     request: Request, body: LoginRequest, db: AsyncSession = Depends(get_db)
 ) -> TokenResponse:
     email = body.email.lower().strip()
+    if login_guard.blocked(email):
+        raise HTTPException(429, "Too many failed attempts. Try again in 15 minutes.")
 
     # Try provider login first.
     pu = (
@@ -36,10 +38,12 @@ async def login(
     ).scalar_one_or_none()
     if pu is not None:
         if not pu.is_active or not verify_password(body.password, pu.password_hash):
+            login_guard.failed(email)
             raise _BAD_CREDS
         provider = await db.get(Provider, pu.provider_id)
         if provider is None or not provider.is_active:
             raise _BAD_CREDS
+        login_guard.succeeded(email)
         token = create_access_token(
             subject=str(pu.id), role="provider", provider_id=str(pu.provider_id)
         )
@@ -52,10 +56,12 @@ async def login(
         await db.execute(select(AdminUser).where(AdminUser.email == email))
     ).scalar_one_or_none()
     if au is not None and verify_password(body.password, au.password_hash):
+        login_guard.succeeded(email)
         brand = au.brand.value if au.brand is not None else None
         token = create_access_token(subject=str(au.id), role="admin", brand=brand)
         return TokenResponse(access_token=token, role="admin", brand=brand)
 
+    login_guard.failed(email)
     raise _BAD_CREDS
 
 

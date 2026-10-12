@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from datetime import timezone
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -16,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import JWTError, decode_access_token
 from app.database import get_db
-from app.models import AdminUser, Provider, ProviderSource
+from app.models import AdminUser, Provider, ProviderSource, ProviderUser
 from app.models.enums import Brand
 
 _bearer = HTTPBearer(auto_error=False)
@@ -44,6 +45,7 @@ class Principal:
     # display names — the ONLY scope any live CRM query may use.
     source_ids: list[uuid.UUID] = field(default_factory=list)
     source_names: dict[uuid.UUID, str | None] = field(default_factory=dict)
+    issued_at: int | None = None  # token "iat" (unix seconds)
 
     @property
     def is_super_admin(self) -> bool:
@@ -80,6 +82,7 @@ async def get_principal(
         role=role,
         provider_id=uuid.UUID(provider_id) if provider_id else None,
         brand=Brand(brand_raw) if brand_raw else None,
+        issued_at=payload.get("iat"),
     )
 
 
@@ -110,6 +113,21 @@ async def require_provider(
     provider-facing query may use for scoping."""
     if principal.role != "provider" or principal.provider_id is None:
         raise _FORBIDDEN
+
+    # The login itself must still be valid: not deactivated, still this
+    # provider's, and the token not issued before a password reset.
+    try:
+        user = await db.get(ProviderUser, uuid.UUID(principal.user_id))
+    except (ValueError, TypeError):
+        raise _UNAUTH
+    if user is None or not user.is_active or user.provider_id != principal.provider_id:
+        raise _UNAUTH
+    if user.password_changed_at is not None:
+        changed = user.password_changed_at
+        if changed.tzinfo is None:  # SQLite drops tz; stored values are UTC
+            changed = changed.replace(tzinfo=timezone.utc)
+        if principal.issued_at is None or principal.issued_at < int(changed.timestamp()):
+            raise _UNAUTH
 
     provider = await db.get(Provider, principal.provider_id)
     if provider is None or not provider.is_active:

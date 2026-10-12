@@ -13,6 +13,12 @@ OptMoney = Annotated[
     Decimal | None,
     PlainSerializer(lambda v: None if v is None else f"{v:.2f}", return_type=str | None),
 ]
+# A percent rate exactly as the CRM stores it, at least 2 decimals:
+# 0.6 -> "0.60", 0.625 -> "0.625" (never rounded to 0.62).
+OptRate = Annotated[
+    Decimal | None,
+    PlainSerializer(lambda v: None if v is None else format(v, "f"), return_type=str | None),
+]
 
 
 class PayoutSummary(BaseModel):
@@ -21,6 +27,8 @@ class PayoutSummary(BaseModel):
     earned: Money = Decimal("0")
     paid: Money = Decimal("0")
     pending: Money = Decimal("0")
+    # Paid beyond what was earned (pending can't go below 0, so it shows here).
+    overpaid: Money = Decimal("0")
 
 
 class PayoutItem(BaseModel):
@@ -31,10 +39,11 @@ class PayoutItem(BaseModel):
     pf_paid_on: date | None  # the date the payout is earned
     disbursed_total: Money  # information only
     payout_basis: str  # 'rate' | 'agreed'
-    payout_rate: OptMoney  # percent, e.g. "0.60"; null when basis = 'agreed'
+    payout_rate: OptRate  # percent, e.g. "0.60"; null when basis = 'agreed'
     earned: Money
     paid: Money
     pending: Money
+    overpaid: Money = Decimal("0")
 
 
 class PayoutsResponse(BaseModel):
@@ -45,3 +54,16 @@ class PayoutsResponse(BaseModel):
     page_size: int
     total: int
     data_as_of: str | None = None
+
+
+class UnmappedPayoutItem(PayoutItem):
+    """A payout on a CRM source no provider is mapped to (admin only)."""
+
+    crm_source_id: str | None
+    source_name: str | None
+
+
+class UnmappedPayoutsResponse(BaseModel):
+    summary: PayoutSummary
+    items: list[UnmappedPayoutItem]
+    total: int

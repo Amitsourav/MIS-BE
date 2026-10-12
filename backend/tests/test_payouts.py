@@ -86,6 +86,7 @@ async def test_summary_covers_whole_filtered_set_not_the_page(client, db, crm):
         "earned": "10500.50",
         "paid": "6500.25",
         "pending": "4000.25",
+        "overpaid": "0.00",
     }
     assert body["items"][0]["pf_paid_on"] == "2026-09-20"  # newest PF-paid first
 
@@ -132,6 +133,7 @@ async def test_money_serialises_as_strings(client, db, crm):
     assert set(rate_row) == {
         "serial_no", "full_name", "bank_name", "loan_amount", "pf_paid_on",
         "disbursed_total", "payout_basis", "payout_rate", "earned", "paid", "pending",
+        "overpaid",
     }
 
     agreed = by_basis["agreed"]
@@ -149,9 +151,10 @@ async def test_export_returns_all_filtered_rows(client, db, crm):
     res = await client.get("/provider/payouts/export", headers=provider_headers(a))
     assert res.status_code == 200
     assert res.headers["content-type"].startswith("text/csv")
-    lines = res.text.strip().splitlines()
+    assert res.text.startswith("\ufeff")
+    lines = res.text.lstrip("\ufeff").strip().splitlines()
     assert lines[0] == ("serial_no,full_name,bank_name,loan_amount,pf_paid_on,"
-                        "disbursed_total,payout_basis,payout_rate,earned,paid,pending")
+                        "disbursed_total,payout_basis,payout_rate,earned,paid,pending,overpaid")
     assert len(lines) == 4
     assert "10800.00" in lines[1]
 

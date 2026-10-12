@@ -8,7 +8,7 @@ import secrets
 import uuid
 from datetime import date, datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import delete, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,7 +45,7 @@ from app.schemas.sync import (
     SyncStateOut,
     SyncStatusResponse,
 )
-from app.schemas.payout import PayoutsResponse
+from app.schemas.payout import PayoutsResponse, UnmappedPayoutsResponse
 from app.schemas.target import TargetOut, TargetsBulkUpdate
 from app.crm import reader
 from app.services import live, payouts
@@ -262,6 +262,8 @@ async def reset_provider_user_password(
     chosen = body.password if body else None
     new_password = chosen or secrets.token_urlsafe(9)
     user.password_hash = hash_password(new_password)
+    # Anyone still logged in with the old password is signed out.
+    user.password_changed_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(user)
     _audit(principal, "reset_provider_password", provider_id=str(provider_id),
@@ -329,6 +331,47 @@ async def list_provider_sources(
         select(ProviderSource).where(ProviderSource.provider_id == provider_id)
     )
     return [ProviderSourceOut.model_validate(s) for s in rows.scalars().all()]
+
+
+@router.delete(
+    "/providers/{provider_id}/sources/{mapping_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+)
+async def unmap_source(
+    provider_id: uuid.UUID,
+    mapping_id: uuid.UUID,
+    principal: Principal = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Remove a source from a provider (e.g. it was mapped to the wrong one).
+    Data is live, so its leads and payouts leave that provider's portal at
+    once; the source can then be mapped to the right provider."""
+    await _get_scoped_provider(db, principal, provider_id)
+    mapping = await db.get(ProviderSource, mapping_id)
+    if mapping is None or mapping.provider_id != provider_id:
+        raise HTTPException(404, "Mapping not found")
+    _assert_brand(principal, mapping.brand)
+    brand, crm_source_id = mapping.brand.value, str(mapping.crm_source_id)
+    await db.delete(mapping)
+    await db.commit()
+    _audit(principal, "unmap_source", provider_id=str(provider_id),
+           brand=brand, crm_source_id=crm_source_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/payouts/unmapped", response_model=UnmappedPayoutsResponse)
+async def unmapped_payouts(
+    principal: Principal = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> UnmappedPayoutsResponse:
+    """FMC payouts on CRM sources no provider is mapped to, so no partner sees
+    them. FMC and super admins only (AV has no payouts)."""
+    _assert_brand(principal, Brand.FMC)
+    rows = await db.execute(
+        select(ProviderSource.crm_source_id).where(ProviderSource.brand == Brand.FMC)
+    )
+    return await payouts.unmapped_payouts([r[0] for r in rows.all()])
 
 
 @router.get("/providers/{provider_id}/payouts", response_model=PayoutsResponse)
