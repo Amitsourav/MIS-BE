@@ -230,3 +230,39 @@ async def test_av_leads_use_admitverse_stage_names(client, db, crm):
     assert {i["crm_stage"]: i["crm_stage_label"] for i in items} == {
         "qualified": "Hot", "dnp_pre_qualified": "DNP", "warm": "Warm",
     }
+
+
+async def test_all_time_covers_every_dashboard_endpoint(client, db, crm):
+    old = datetime(2025, 7, 10, 10, 0, tzinfo=timezone.utc)  # far outside the 30-day default
+    p, _ = await _setup(db, crm, lambda s: [
+        lead_row(s, phone="9000000001", created_at=old, raw_stage="disbursed"),
+        lead_row(s, phone="9000000002", created_at=old, raw_stage="opportunity"),
+    ])
+    h = provider_headers(p)
+
+    default = (await client.get("/me/overview", headers=h)).json()
+    assert default["funnel"]["delivered"] == 0  # last 30 days only
+
+    ov = (await client.get("/me/overview?all_time=true", headers=h)).json()
+    assert ov["funnel"]["delivered"] == 2 and ov["funnel"]["converted"] == 1
+    assert ov["date_from"] == "2025-07-10"  # span actually covered
+    # all_time wins over any from/to the client also sends
+    both = (await client.get(f"/me/overview?all_time=true&{RANGE}", headers=h)).json()
+    assert both["funnel"] == ov["funnel"]
+
+    q = (await client.get("/me/quality?all_time=true", headers=h)).json()
+    assert q == ov["quality"]
+    tr = (await client.get("/me/trends?all_time=true", headers=h)).json()
+    assert [(pt["period"], pt["delivered"]) for pt in tr["points"]] == [("2025-07-10", 2)]
+    split = (await client.get("/me/brand-split?all_time=true", headers=h)).json()
+    assert split["rows"][0]["funnel"] == ov["funnel"]
+    leads = (await client.get("/me/leads?all_time=true", headers=h)).json()
+    assert leads["total"] == ov["funnel"]["delivered"]
+
+
+async def test_all_time_with_no_leads_is_empty_not_an_error(client, db, crm):
+    p, _ = await _setup(db, crm, lambda s: [])
+    res = await client.get("/me/overview?all_time=true", headers=provider_headers(p))
+    assert res.status_code == 200
+    body = res.json()
+    assert body["funnel"]["delivered"] == 0 and body["date_from"] == body["date_to"]

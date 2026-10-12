@@ -53,6 +53,13 @@ def _range(date_from: date | None, date_to: date | None) -> tuple[date, date]:
     return frm, to
 
 
+def _window(
+    date_from: date | None, date_to: date | None, all_time: bool
+) -> tuple[date | None, date | None]:
+    """The created_at window to read: (None, None) for "All time"."""
+    return (None, None) if all_time else _range(date_from, date_to)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -71,11 +78,16 @@ async def overview(
     brand: str | None = None,
     date_from: date | None = Query(None, alias="from"),
     date_to: date | None = Query(None, alias="to"),
+    all_time: bool = Query(False),
     principal: Principal = Depends(require_provider),
     db: AsyncSession = Depends(get_db),
 ) -> OverviewResponse:
-    frm, to = _range(date_from, date_to)
+    frm, to = _window(date_from, date_to, all_time)
     facts = await _facts(principal, brand, frm, to)
+    if all_time:
+        # Report the span actually covered: first lead (or today) .. today.
+        to = datetime.now(timezone.utc).date()
+        frm = min((f.cohort_day for f in facts if f.cohort_day), default=to)
     agg = M.aggregate(facts)
     tfc, ttq = M.time_to_averages(facts)
 
@@ -108,9 +120,10 @@ async def trends(
     granularity: str = Query("day", pattern="^(day|week)$"),
     date_from: date | None = Query(None, alias="from"),
     date_to: date | None = Query(None, alias="to"),
+    all_time: bool = Query(False),
     principal: Principal = Depends(require_provider),
 ) -> TrendsResponse:
-    frm, to = _range(date_from, date_to)
+    frm, to = _window(date_from, date_to, all_time)
     facts = await _facts(principal, brand, frm, to)
     return TrendsResponse(granularity=granularity, points=M.trend_points(facts, granularity))
 
@@ -119,9 +132,10 @@ async def trends(
 async def brand_split(
     date_from: date | None = Query(None, alias="from"),
     date_to: date | None = Query(None, alias="to"),
+    all_time: bool = Query(False),
     principal: Principal = Depends(require_provider),
 ) -> BrandSplitResponse:
-    frm, to = _range(date_from, date_to)
+    frm, to = _window(date_from, date_to, all_time)
     facts = await _facts(principal, None, frm, to)
     rows = []
     if facts:  # each vendor belongs to exactly one company
@@ -143,9 +157,10 @@ async def quality(
     brand: str | None = None,
     date_from: date | None = Query(None, alias="from"),
     date_to: date | None = Query(None, alias="to"),
+    all_time: bool = Query(False),
     principal: Principal = Depends(require_provider),
 ) -> QualityMetrics:
-    frm, to = _range(date_from, date_to)
+    frm, to = _window(date_from, date_to, all_time)
     return M.to_quality(M.aggregate(await _facts(principal, brand, frm, to)))
 
 
@@ -166,7 +181,7 @@ async def _filtered_leads(
             stage = CanonicalStage(stage)
         except ValueError:
             raise HTTPException(422, "Unknown stage")
-    frm, to = (None, None) if all_time else _range(date_from, date_to)
+    frm, to = _window(date_from, date_to, all_time)
     facts = await _facts(principal, brand, frm, to)
     if stage is not None:
         facts = [f for f in facts if f.canonical_stage == stage]
@@ -236,7 +251,7 @@ async def stages(
 ) -> list[CrmStageCount]:
     """The CRM stages the caller's leads are in right now, with counts, in the
     CRM's pipeline order — for the Leads stage filter."""
-    frm, to = (None, None) if all_time else _range(date_from, date_to)
+    frm, to = _window(date_from, date_to, all_time)
     counts: dict[str, int] = {}
     for f in await _facts(principal, brand, frm, to):
         value = crm_stage_value(f.raw_stage)
