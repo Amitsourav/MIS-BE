@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, EmailStr
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.models.enums import Brand
 
@@ -57,6 +57,11 @@ class ProviderUserOut(BaseModel):
 class ProviderUserCreated(ProviderUserOut):
     # Returned once on creation so the admin can hand the temp password over.
     temp_password: str | None = None
+
+
+class PasswordReset(BaseModel):
+    # If omitted, the API generates a new password and returns it once.
+    password: str | None = Field(None, min_length=8)
 
 
 # --- Source mapping ---

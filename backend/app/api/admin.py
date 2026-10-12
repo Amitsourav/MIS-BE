@@ -34,8 +34,10 @@ from app.schemas.provider import (
     ProviderSourceCreate,
     ProviderSourceOut,
     ProviderUpdate,
+    PasswordReset,
     ProviderUserCreate,
     ProviderUserCreated,
+    ProviderUserOut,
 )
 from app.schemas.sync import (
     LeaderboardRow,
@@ -221,6 +223,56 @@ async def create_provider_user(
         created_at=user.created_at,
         # Returned once so the admin can hand it over; never stored in plaintext.
         temp_password=None if body.password else temp_password,
+    )
+
+
+@router.get("/providers/{provider_id}/users", response_model=list[ProviderUserOut])
+async def list_provider_users(
+    provider_id: uuid.UUID,
+    principal: Principal = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> list[ProviderUserOut]:
+    await _get_scoped_provider(db, principal, provider_id)
+    rows = await db.execute(
+        select(ProviderUser)
+        .where(ProviderUser.provider_id == provider_id)
+        .order_by(ProviderUser.created_at)
+    )
+    return [ProviderUserOut.model_validate(u) for u in rows.scalars().all()]
+
+
+@router.post(
+    "/providers/{provider_id}/users/{user_id}/reset-password",
+    response_model=ProviderUserCreated,
+)
+async def reset_provider_user_password(
+    provider_id: uuid.UUID,
+    user_id: uuid.UUID,
+    body: PasswordReset | None = None,
+    principal: Principal = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> ProviderUserCreated:
+    """Set a new password for a provider login. Omit `password` to have one
+    generated; it is returned once and never stored in plaintext."""
+    await _get_scoped_provider(db, principal, provider_id)
+    user = await db.get(ProviderUser, user_id)
+    if user is None or user.provider_id != provider_id:
+        raise HTTPException(404, "User not found")
+
+    chosen = body.password if body else None
+    new_password = chosen or secrets.token_urlsafe(9)
+    user.password_hash = hash_password(new_password)
+    await db.commit()
+    await db.refresh(user)
+    _audit(principal, "reset_provider_password", provider_id=str(provider_id),
+           user_id=str(user_id))
+    return ProviderUserCreated(
+        id=user.id,
+        provider_id=user.provider_id,
+        email=user.email,
+        is_active=user.is_active,
+        created_at=user.created_at,
+        temp_password=None if chosen else new_password,
     )
 
 
