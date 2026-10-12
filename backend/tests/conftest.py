@@ -55,6 +55,7 @@ class FakeCrm:
     def __init__(self) -> None:
         self.leads: dict = {}    # brand -> list[row]
         self.payouts: list = []  # FMC view rows (+ serial_no/full_name)
+        self.releases: list = []  # FMC mis_partner_disbursements rows
         self.sources: dict = {}  # brand -> list[{crm_source_id, name}]
         self.down = False
         self.calls: list = []    # (fn, brand, source_ids) for scoping asserts
@@ -85,8 +86,10 @@ class FakeCrm:
         return [
             dict(r) for r in self.payouts
             if r["lead_source_id"] in ids
-            and (date_from is None or (r["pf_paid_on"] and r["pf_paid_on"] >= date_from))
-            and (date_to is None or (r["pf_paid_on"] and r["pf_paid_on"] <= date_to))
+            and (date_from is None
+                 or (r["last_disbursed_on"] and r["last_disbursed_on"] >= date_from))
+            and (date_to is None
+                 or (r["last_disbursed_on"] and r["last_disbursed_on"] <= date_to))
         ]
 
     async def payout_rows_unmapped(self, brand, mapped_source_ids):
@@ -100,6 +103,28 @@ class FakeCrm:
         return [
             {**r, "source_name": names.get(r["lead_source_id"])}
             for r in self.payouts if r["lead_source_id"] not in mapped
+        ]
+
+    async def disbursement_rows(self, brand, source_ids):
+        self._check()
+        self.calls.append(("disbursement_rows", brand, list(source_ids)))
+        from app.models.enums import Brand
+        if brand != Brand.FMC:
+            return []
+        ids = set(source_ids)
+        return [dict(r) for r in self.releases if r["lead_source_id"] in ids]
+
+    async def lead_reach_rows(self, brand, source_ids, start, end):
+        self._check()
+        self.calls.append(("lead_reach_rows", brand, list(source_ids)))
+        ids = set(source_ids)
+        return [
+            {"crm_lead_id": r["crm_lead_id"], "raw_stage": r["raw_stage"],
+             "logged_stages": r.get("logged_stages", [])}
+            for r in self.leads.get(brand, [])
+            if r["crm_source_id"] in ids
+            and (start is None or r["created_at"] >= start)
+            and (end is None or r["created_at"] < end)
         ]
 
     async def lead_sources(self, brand):
@@ -123,4 +148,6 @@ async def crm(monkeypatch):
     monkeypatch.setattr(reader, "payout_rows", fake.payout_rows)
     monkeypatch.setattr(reader, "lead_sources", fake.lead_sources)
     monkeypatch.setattr(reader, "payout_rows_unmapped", fake.payout_rows_unmapped)
+    monkeypatch.setattr(reader, "disbursement_rows", fake.disbursement_rows)
+    monkeypatch.setattr(reader, "lead_reach_rows", fake.lead_reach_rows)
     return fake

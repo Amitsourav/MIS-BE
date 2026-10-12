@@ -98,7 +98,7 @@ May 2026; AV has a ~17-stage pipeline). CRM table/column names are also overrida
 · `/me/quality` · `/me/leads` · `/me/leads/export`
 
 **Payouts (provider, FMC only)** — `GET /provider/payouts` · `/provider/payouts/export`
-(`date_from`/`date_to` filter on the PF-paid date; omitted = all time; AV providers get
+(`date_from`/`date_to` filter on `last_disbursed_on`, the bank's latest release; omitted = all time; AV providers get
 `brand_supported: false`). Money is returned as 2-dp strings.
 
 **Admin** — `POST/GET/PUT /admin/providers` · `GET /admin/providers/{id}/payouts` · `POST /admin/providers/{id}/users`
@@ -137,8 +137,10 @@ Set env vars (`MIS_DATABASE_URL`, `FMC_DB_URL`, `AV_DB_URL`, `JWT_SECRET`,
 
 ### Partner payouts
 `/provider/payouts` reads the FMC view `public.mis_partner_payouts` live (one row per
-lender file that has reached PF paid; the partner earns rate × sanctioned loan amount,
-or a hand-agreed amount, on the PF-paid date). `mis_readonly` can read only `leads`,
+lender file with a payout; the partner earns their rate on the amount the bank has
+actually released, growing with each tranche, or a hand-agreed amount; the CRM computes
+`payout_earned`). Rows are dated, filtered and sorted by `last_disbursed_on`.
+`mis_readonly` can read only `leads`,
 `lead_sources`, `lead_stage_logs` and this view — see `scripts/crm_readonly_setup.sql`.
 The MIS never reads FMC's bank / lender-file / disbursement tables, and never FMC's own
 commission.

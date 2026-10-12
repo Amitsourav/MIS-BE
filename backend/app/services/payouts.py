@@ -1,8 +1,10 @@
 """Partner payouts (Payout page), read live from the FMC view
 `public.mis_partner_payouts` on every request.
 
-Payout = partner rate × sanctioned loan amount (or a hand-agreed amount),
-earned on the PF-paid date. Scoped to the caller's mapped FMC sources in SQL.
+Payout = partner rate × the amount the bank has actually released, growing
+with each tranche (or a hand-agreed amount). The CRM computes payout_earned;
+the MIS never recomputes it. Rows are dated by last_disbursed_on (when money
+was last released). Scoped to the caller's mapped FMC sources in SQL.
 The view is small (hundreds of rows), so ordering, the summary and paging are
 done here on the scoped rows.
 """
@@ -77,9 +79,9 @@ def _summary(rows: list[dict[str, Any]]) -> PayoutSummary:
 
 
 def _sort_key(r: dict[str, Any]):
-    # PF paid newest first (nulls last), then a stable tie-break for paging.
-    pf = r.get("pf_paid_on")
-    return (pf is None, -(pf.toordinal()) if pf else 0, str(r["lead_bank_id"]))
+    # Last released newest first (nulls last), then a stable tie-break for paging.
+    d = r.get("last_disbursed_on")
+    return (d is None, -(d.toordinal()) if d else 0, str(r["lead_bank_id"]))
 
 
 def _item_fields(r: dict[str, Any]) -> dict[str, Any]:
@@ -89,6 +91,8 @@ def _item_fields(r: dict[str, Any]) -> dict[str, Any]:
         bank_name=r.get("bank_name"),
         loan_amount=_opt_money(r.get("loan_amount")),
         pf_paid_on=r.get("pf_paid_on"),
+        first_disbursed_on=r.get("first_disbursed_on"),
+        last_disbursed_on=r.get("last_disbursed_on"),
         disbursed_total=_money(r.get("disbursed_total")),
         # The CRM view's own default for a missing basis is 'agreed'.
         payout_basis=r.get("payout_basis") or "agreed",

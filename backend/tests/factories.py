@@ -95,6 +95,7 @@ def payout_row(
     rate: str | None = "0.60",
     serial_no: int | None = None,
     full_name: str | None = None,
+    released: date | None = None,  # last_disbursed_on; defaults to pf
 ) -> dict:
     """A row shaped like `app.crm.reader.payout_rows` output (the FMC view
     plus the student's serial/name from the leads table)."""
@@ -106,6 +107,9 @@ def payout_row(
         "bank_name": bank,
         "loan_amount": None if loan is None else Decimal(loan),
         "pf_paid_on": pf,
+        "sanction_date": None,
+        "first_disbursed_on": released or pf,
+        "last_disbursed_on": released or pf,
         "disbursed_total": Decimal(disbursed),
         "payout_basis": basis,
         "payout_rate": None if rate is None else Decimal(rate),

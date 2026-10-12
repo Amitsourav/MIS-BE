@@ -23,8 +23,9 @@ from app.schemas.metrics import (
     QualityMetrics,
     TrendsResponse,
 )
+from app.schemas.charts import LeadFunnelResponse, PayoutMonthlyResponse
 from app.schemas.payout import PayoutsResponse
-from app.services import live
+from app.services import charts, live
 from app.services import metrics as M
 from app.services import payouts as P
 from app.services.scorecard import compute_scorecard, load_targets
@@ -240,6 +241,19 @@ async def leads(
     )
 
 
+@router.get("/lead-funnel", response_model=LeadFunnelResponse)
+async def lead_funnel(
+    date_from: date | None = Query(None, alias="from"),
+    date_to: date | None = Query(None, alias="to"),
+    all_time: bool = Query(False),
+    principal: Principal = Depends(require_provider),
+) -> LeadFunnelResponse:
+    """All leads -> Login -> Sanction -> PF paid -> Disbursed for leads delivered
+    in the window: how many reached each step. FMC only."""
+    frm, to = _window(date_from, date_to, all_time)
+    return await charts.lead_funnel(principal.brand, principal.source_ids, frm, to)
+
+
 @router.get("/stages", response_model=list[CrmStageCount])
 async def stages(
     brand: str | None = None,
@@ -314,7 +328,8 @@ async def payouts(
     principal: Principal = Depends(require_provider),
 ) -> PayoutsResponse:
     """Earnings on the caller's students who have paid PF to a lender. Dates
-    filter on pf_paid_on; omitted = all time."""
+    filter on last_disbursed_on (when the bank last released money); omitted
+    = all time."""
     return await P.build_payouts_page(
         provider_brand=principal.brand,
         source_ids=principal.source_ids,
@@ -322,6 +337,19 @@ async def payouts(
         date_to=date_to,
         page=page,
         page_size=page_size,
+    )
+
+
+@payouts_router.get("/payouts/monthly", response_model=PayoutMonthlyResponse)
+async def payouts_monthly(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    principal: Principal = Depends(require_provider),
+) -> PayoutMonthlyResponse:
+    """Per month: revenue (rate x sanctioned loan, in the sanction month) and
+    disbursement (earned on money released, in each release's month)."""
+    return await charts.payout_monthly(
+        principal.brand, principal.source_ids, date_from, date_to
     )
 
 
@@ -354,12 +382,14 @@ async def payouts_export(
                 row["paid"],
                 row["pending"],
                 row["overpaid"],
+                row["first_disbursed_on"] or "",
+                row["last_disbursed_on"] or "",
             ]
         )
     return csv_response(
         ["serial_no", "full_name", "bank_name", "loan_amount", "pf_paid_on",
          "disbursed_total", "payout_basis", "payout_rate", "earned", "paid",
-         "pending", "overpaid"],
+         "pending", "overpaid", "first_disbursed_on", "last_disbursed_on"],
         rows,
         "payouts.csv",
     )

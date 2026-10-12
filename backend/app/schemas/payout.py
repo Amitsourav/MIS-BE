@@ -36,14 +36,16 @@ class PayoutItem(BaseModel):
     full_name: str | None
     bank_name: str | None
     loan_amount: OptMoney  # sanctioned by this lender
-    pf_paid_on: date | None  # the date the payout is earned
-    disbursed_total: Money  # information only
+    pf_paid_on: date | None  # information only; no longer the earning date
+    disbursed_total: Money  # what the bank has released so far: the payout basis
     payout_basis: str  # 'rate' | 'agreed'
     payout_rate: OptRate  # percent, e.g. "0.60"; null when basis = 'agreed'
     earned: Money
     paid: Money
     pending: Money
     overpaid: Money = Decimal("0")
+    first_disbursed_on: date | None = None  # bank's first release
+    last_disbursed_on: date | None = None  # latest release: the row's date
 
 
 class PayoutsResponse(BaseModel):

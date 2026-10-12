@@ -133,7 +133,7 @@ async def test_money_serialises_as_strings(client, db, crm):
     assert set(rate_row) == {
         "serial_no", "full_name", "bank_name", "loan_amount", "pf_paid_on",
         "disbursed_total", "payout_basis", "payout_rate", "earned", "paid", "pending",
-        "overpaid",
+        "overpaid", "first_disbursed_on", "last_disbursed_on",
     }
 
     agreed = by_basis["agreed"]
@@ -154,7 +154,8 @@ async def test_export_returns_all_filtered_rows(client, db, crm):
     assert res.text.startswith("\ufeff")
     lines = res.text.lstrip("\ufeff").strip().splitlines()
     assert lines[0] == ("serial_no,full_name,bank_name,loan_amount,pf_paid_on,"
-                        "disbursed_total,payout_basis,payout_rate,earned,paid,pending,overpaid")
+                        "disbursed_total,payout_basis,payout_rate,earned,paid,pending,overpaid,"
+                        "first_disbursed_on,last_disbursed_on")
     assert len(lines) == 4
     assert "10800.00" in lines[1]
 
@@ -190,3 +191,42 @@ async def test_crm_outage_is_a_503_not_a_crash(client, db, crm):
     crm.down = True
     res = await client.get("/provider/payouts", headers=provider_headers(a))
     assert res.status_code == 503
+
+
+async def test_rows_are_dated_by_the_banks_last_release_not_pf(client, db, crm):
+    """Payout rule since 12 Oct: earned on what the bank has released, so the
+    page filters and sorts on last_disbursed_on; pf_paid_on is information only."""
+    a = await make_provider(db, "A", "rel@x.com")
+    src = await map_source(db, a)
+    crm.payouts = [
+        # PF paid in June, but the bank released money only in September
+        payout_row(src, bank="Late", pf=date(2026, 6, 1), released=date(2026, 9, 15)),
+        payout_row(src, bank="Early", pf=date(2026, 8, 30), released=date(2026, 7, 1)),
+    ]
+    h = provider_headers(a)
+    body = (await client.get("/provider/payouts", headers=h)).json()
+    assert [i["bank_name"] for i in body["items"]] == ["Late", "Early"]  # newest release first
+    assert body["items"][0]["last_disbursed_on"] == "2026-09-15"
+    assert body["items"][0]["pf_paid_on"] == "2026-06-01"  # still returned, information only
+
+    sept = (await client.get("/provider/payouts?date_from=2026-09-01&date_to=2026-09-30",
+                             headers=h)).json()
+    assert [i["bank_name"] for i in sept["items"]] == ["Late"]  # by release, not PF
+    june = (await client.get("/provider/payouts?date_from=2026-06-01&date_to=2026-06-30",
+                             headers=h)).json()
+    assert june["total"] == 0
+
+
+async def test_row_with_no_release_yet_shows_all_time_but_not_in_a_date_range(client, db, crm):
+    a = await make_provider(db, "A", "norel@x.com")
+    src = await map_source(db, a)
+    row = payout_row(src, basis="agreed", rate=None, earned="5000.00")
+    row["first_disbursed_on"] = row["last_disbursed_on"] = None
+    crm.payouts = [row, payout_row(src, released=date(2026, 9, 1))]
+    h = provider_headers(a)
+    body = (await client.get("/provider/payouts", headers=h)).json()
+    assert body["total"] == 2
+    assert body["items"][-1]["last_disbursed_on"] is None  # undated rows last
+    ranged = (await client.get("/provider/payouts?date_from=2026-01-01&date_to=2026-12-31",
+                               headers=h)).json()
+    assert ranged["total"] == 1

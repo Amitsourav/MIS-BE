@@ -45,10 +45,11 @@ from app.schemas.sync import (
     SyncStateOut,
     SyncStatusResponse,
 )
+from app.schemas.charts import PayoutMonthlyResponse
 from app.schemas.payout import PayoutsResponse, UnmappedPayoutsResponse
 from app.schemas.target import TargetOut, TargetsBulkUpdate
 from app.crm import reader
-from app.services import live, payouts
+from app.services import charts, live, payouts
 from app.services import metrics as M
 from app.services.scorecard import compute_scorecard, load_targets
 
@@ -372,6 +373,29 @@ async def unmapped_payouts(
         select(ProviderSource.crm_source_id).where(ProviderSource.brand == Brand.FMC)
     )
     return await payouts.unmapped_payouts([r[0] for r in rows.all()])
+
+
+@router.get(
+    "/providers/{provider_id}/payouts/monthly", response_model=PayoutMonthlyResponse
+)
+async def provider_payouts_monthly(
+    provider_id: uuid.UUID,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    principal: Principal = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> PayoutMonthlyResponse:
+    """The provider's monthly revenue vs disbursement graph, as an admin sees it."""
+    provider = await _get_scoped_provider(db, principal, provider_id)
+    rows = await db.execute(
+        select(ProviderSource.crm_source_id).where(
+            ProviderSource.provider_id == provider.id,
+            ProviderSource.brand == provider.brand,
+        )
+    )
+    return await charts.payout_monthly(
+        provider.brand, [r[0] for r in rows.all()], date_from, date_to
+    )
 
 
 @router.get("/providers/{provider_id}/payouts", response_model=PayoutsResponse)

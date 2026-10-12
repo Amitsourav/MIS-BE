@@ -115,12 +115,13 @@ _PAYOUT_SQL = """
         p.lead_bank_id, p.lead_id, p.lead_source_id, p.bank_name, p.loan_amount,
         p.pf_paid_on, p.disbursed_total, p.payout_basis, p.payout_rate,
         p.payout_earned, p.payout_paid, p.payout_pending, p.updated_at,
+        p.first_disbursed_on, p.last_disbursed_on, p.sanction_date,
         l.serial_no, l.full_name
     FROM public.mis_partner_payouts p
     LEFT JOIN public.leads l ON l.id = p.lead_id
     WHERE p.lead_source_id = ANY($1::uuid[])
-      AND ($2::date IS NULL OR p.pf_paid_on >= $2)
-      AND ($3::date IS NULL OR p.pf_paid_on <= $3)
+      AND ($2::date IS NULL OR p.last_disbursed_on >= $2)
+      AND ($3::date IS NULL OR p.last_disbursed_on <= $3)
 """
 
 
@@ -130,8 +131,8 @@ async def payout_rows(
     date_from: date | None,
     date_to: date | None,
 ) -> list[dict[str, Any]]:
-    """Partner payouts (FMC view only) for `source_ids`, PF paid in
-    [date_from, date_to]. Admitverse has no payouts → []."""
+    """Partner payouts (FMC view only) for `source_ids`, last released by the
+    bank in [date_from, date_to]. Admitverse has no payouts → []."""
     if brand != Brand.FMC or not source_ids:
         return []
     rows = await pool.fetch(brand, _PAYOUT_SQL, list(source_ids), date_from, date_to)
@@ -143,6 +144,7 @@ _UNMAPPED_PAYOUT_SQL = """
         p.lead_bank_id, p.lead_id, p.lead_source_id, p.bank_name, p.loan_amount,
         p.pf_paid_on, p.disbursed_total, p.payout_basis, p.payout_rate,
         p.payout_earned, p.payout_paid, p.payout_pending, p.updated_at,
+        p.first_disbursed_on, p.last_disbursed_on, p.sanction_date,
         l.serial_no, l.full_name, s.name AS source_name
     FROM public.mis_partner_payouts p
     LEFT JOIN public.leads l ON l.id = p.lead_id
@@ -158,6 +160,59 @@ async def payout_rows_unmapped(
     if brand != Brand.FMC:
         return []
     rows = await pool.fetch(brand, _UNMAPPED_PAYOUT_SQL, list(mapped_source_ids))
+    return [dict(r) for r in rows]
+
+
+_DISBURSEMENT_SQL = """
+    SELECT d.lead_bank_id, d.tranche_no, d.disbursed_amount, d.disbursed_on
+    FROM public.mis_partner_disbursements d
+    WHERE d.lead_source_id = ANY($1::uuid[])
+"""
+
+
+async def disbursement_rows(
+    brand: Brand, source_ids: list[uuid.UUID]
+) -> list[dict[str, Any]]:
+    """Each release by a lender on the caller's payout files (FMC view; one row
+    per tranche, only commission-earning releases). Join on lead_bank_id."""
+    if brand != Brand.FMC or not source_ids:
+        return []
+    rows = await pool.fetch(brand, _DISBURSEMENT_SQL, list(source_ids))
+    return [dict(r) for r in rows]
+
+
+def _reach_sql(brand: Brand) -> str:
+    s = CRM_SCHEMAS[brand]
+    return f"""
+        SELECT
+            l.{s.lead_id} AS crm_lead_id,
+            l.{s.lead_stage}::text AS raw_stage,
+            coalesce(
+                array_agg(DISTINCT lower(trim(g.{s.log_stage}::text)))
+                    FILTER (WHERE g.{s.log_lead_fk} IS NOT NULL),
+                '{{}}'
+            ) AS logged_stages
+        FROM {s.leads_table} l
+        LEFT JOIN {s.stage_logs_table} g ON g.{s.log_lead_fk} = l.{s.lead_id}
+        WHERE NOT l.{s.lead_deleted}
+          AND l.{s.lead_source_fk} = ANY($1::uuid[])
+          AND ($2::timestamptz IS NULL OR l.{s.lead_created} >= $2)
+          AND ($3::timestamptz IS NULL OR l.{s.lead_created} < $3)
+        GROUP BY l.{s.lead_id}, l.{s.lead_stage}
+    """
+
+
+async def lead_reach_rows(
+    brand: Brand,
+    source_ids: list[uuid.UUID],
+    start: datetime | None,
+    end: datetime | None,
+) -> list[dict[str, Any]]:
+    """Per lead created in [start, end): its current stage and every stage it
+    was ever moved to (from the stage logs), to tell how far it got."""
+    if not source_ids:
+        return []
+    rows = await pool.fetch(brand, _reach_sql(brand), list(source_ids), start, end)
     return [dict(r) for r in rows]
 
 
