@@ -69,3 +69,51 @@ async def test_no_invoices_yet_is_all_not_raised(client, db, crm):
     assert s["cash_transferred"] == "200.00" and s["tds"] == "0.00"
     assert s["invoice_not_raised"] == "500.00"
     assert s["invoice_raised"] == "0.00" and s["invoice_overdue"] == "0.00"
+
+
+async def test_pie_adds_up_to_earned_when_overpaid(client, db, crm):
+    # Altera after the switch to 0.60%: paid at the old agreed amount.
+    p = await make_provider(db, "A", "pie4@x.com")
+    src = await map_source(db, p)
+    crm.payouts = [
+        payout_row(src, earned="9830.59", paid="11040.00"),
+        payout_row(src, earned="6558.00"),
+    ]
+    s = (await client.get("/provider/payouts", headers=provider_headers(p))).json()["summary"]
+    assert s["earned"] == "16388.59" and s["overpaid"] == "1209.41"
+    assert s["cash_transferred"] == "9830.59" and s["invoice_not_raised"] == "6558.00"
+    from decimal import Decimal
+    parts = ("cash_transferred", "tds", "invoice_not_raised", "invoice_raised", "invoice_overdue")
+    assert sum(Decimal(s[k]) for k in parts) == Decimal(s["earned"])
+
+
+async def test_invoice_covers_only_its_amount(client, db, crm):
+    p = await make_provider(db, "A", "pie5@x.com")
+    src = await map_source(db, p)
+    crm.payouts = [
+        payout_row(src, earned="1000.00", invoice_status="raised", invoice_due=TODAY,
+                   invoice_amount="600.00"),
+        payout_row(src, earned="500.00", invoice_status="raised",
+                   invoice_due=TODAY - timedelta(days=1), invoice_amount="900.00"),
+    ]
+    body = (await client.get("/provider/payouts", headers=provider_headers(p))).json()
+    s = body["summary"]
+    assert s["invoice_raised"] == "600.00"
+    assert s["invoice_overdue"] == "500.00"  # capped at what's pending
+    assert s["invoice_not_raised"] == "400.00"
+    assert {i["invoice_amount"] for i in body["items"]} == {"600.00", "900.00"}
+
+
+async def test_balance_is_earned_minus_paid(client, db, crm):
+    p = await make_provider(db, "A", "bal@x.com")
+    src = await map_source(db, p)
+    crm.payouts = [
+        payout_row(src, earned="9830.59", paid="11040.00"),  # paid extra
+        payout_row(src, earned="6558.00", paid="1000.00"),  # still owed
+    ]
+    body = (await client.get("/provider/payouts", headers=provider_headers(p))).json()
+    assert body["summary"]["balance"] == "4348.59"  # 16388.59 - 12040
+    assert sorted(i["balance"] for i in body["items"]) == ["-1209.41", "5558.00"]
+    r = await client.get("/provider/payouts/export", headers=provider_headers(p))
+    rows = list(csv.DictReader(io.StringIO(r.text.lstrip("﻿"))))
+    assert sorted(x["balance"] for x in rows) == ["-1209.41", "5558.00"]

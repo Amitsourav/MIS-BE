@@ -117,7 +117,7 @@ _PAYOUT_SQL = """
         p.payout_earned, p.payout_paid, p.payout_pending, p.updated_at,
         p.first_disbursed_on, p.last_disbursed_on, p.sanction_date,
         p.payout_tds, p.payout_paid_on, p.partner_invoice_number, p.partner_invoice_date,
-        p.partner_invoice_due_date, p.partner_invoice_status,
+        p.partner_invoice_due_date, p.partner_invoice_status, p.partner_invoice_amount,
         l.serial_no, l.full_name
     FROM public.mis_partner_payouts p
     LEFT JOIN public.leads l ON l.id = p.lead_id
@@ -148,7 +148,7 @@ _UNMAPPED_PAYOUT_SQL = """
         p.payout_earned, p.payout_paid, p.payout_pending, p.updated_at,
         p.first_disbursed_on, p.last_disbursed_on, p.sanction_date,
         p.payout_tds, p.payout_paid_on, p.partner_invoice_number, p.partner_invoice_date,
-        p.partner_invoice_due_date, p.partner_invoice_status,
+        p.partner_invoice_due_date, p.partner_invoice_status, p.partner_invoice_amount,
         l.serial_no, l.full_name, s.name AS source_name
     FROM public.mis_partner_payouts p
     LEFT JOIN public.leads l ON l.id = p.lead_id

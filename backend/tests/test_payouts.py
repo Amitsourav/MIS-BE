@@ -87,6 +87,7 @@ async def test_summary_covers_whole_filtered_set_not_the_page(client, db, crm):
         "paid": "6500.25",
         "pending": "4000.25",
         "overpaid": "0.00",
+        "balance": "4000.25",
         "cash_transferred": "6500.25",
         "tds": "0.00",
         "invoice_not_raised": "4000.25",
@@ -138,8 +139,8 @@ async def test_money_serialises_as_strings(client, db, crm):
     assert set(rate_row) == {
         "serial_no", "full_name", "bank_name", "loan_amount", "pf_paid_on",
         "disbursed_total", "payout_basis", "payout_rate", "earned", "paid", "pending",
-        "overpaid", "first_disbursed_on", "last_disbursed_on",
-        "tds", "net_paid", "paid_on", "invoice_number", "invoice_date",
+        "overpaid", "balance", "first_disbursed_on", "last_disbursed_on",
+        "tds", "net_paid", "paid_on", "invoice_number", "invoice_amount", "invoice_date",
         "invoice_due_date", "invoice_status", "invoice_state",
     }
 
@@ -162,8 +163,8 @@ async def test_export_returns_all_filtered_rows(client, db, crm):
     lines = res.text.lstrip("\ufeff").strip().splitlines()
     assert lines[0] == ("serial_no,full_name,bank_name,loan_amount,pf_paid_on,"
                         "disbursed_total,payout_basis,payout_rate,earned,paid,pending,overpaid,"
-                        "first_disbursed_on,last_disbursed_on,tds,net_paid,paid_on,"
-                        "invoice_number,invoice_date,invoice_due_date,invoice_status")
+                        "balance,first_disbursed_on,last_disbursed_on,tds,net_paid,paid_on,"
+                        "invoice_number,invoice_amount,invoice_date,invoice_due_date,invoice_status")
     assert len(lines) == 4
     assert "10800.00" in lines[1]
 

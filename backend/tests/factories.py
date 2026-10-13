@@ -99,6 +99,7 @@ def payout_row(
     tds: str = "0.00",
     invoice_status: str | None = None,
     invoice_due: date | None = None,
+    invoice_amount: str | None = None,
 ) -> dict:
     """A row shaped like `app.crm.reader.payout_rows` output (the FMC view
     plus the student's serial/name from the leads table)."""
@@ -129,4 +130,5 @@ def payout_row(
         "partner_invoice_date": invoice_due - timedelta(days=15) if invoice_due else None,
         "partner_invoice_due_date": invoice_due,
         "partner_invoice_status": invoice_status,
+        "partner_invoice_amount": None if invoice_amount is None else Decimal(invoice_amount),
     }

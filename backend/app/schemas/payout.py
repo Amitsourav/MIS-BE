@@ -29,9 +29,13 @@ class PayoutSummary(BaseModel):
     pending: Money = Decimal("0")
     # Paid beyond what was earned (pending can't go below 0, so it shows here).
     overpaid: Money = Decimal("0")
-    # Where the money stands (the Payout page pie). Paid = cash_transferred + tds;
+    # Net position, earned - paid (= pending - overpaid): + FMC still owes the
+    # partner this much; - FMC has paid this much extra.
+    balance: Money = Decimal("0")
+    # Where the earned money stands (the Payout page pie); the 5 slices add up
+    # to earned. Overpaid is shown apart. Paid - overpaid = cash_transferred + tds;
     # pending = invoice_not_raised + invoice_raised + invoice_overdue.
-    cash_transferred: Money = Decimal("0")  # paid minus TDS: what reached the partner
+    cash_transferred: Money = Decimal("0")  # paid (up to earned) minus TDS
     tds: Money = Decimal("0")  # tax deducted at source from what was paid
     invoice_not_raised: Money = Decimal("0")  # pending, partner hasn't invoiced it yet
     invoice_raised: Money = Decimal("0")  # pending on an open invoice, not yet due
@@ -51,6 +55,7 @@ class PayoutItem(BaseModel):
     paid: Money
     pending: Money
     overpaid: Money = Decimal("0")
+    balance: Money = Decimal("0")  # earned - paid: + still to pay, - paid extra
     first_disbursed_on: date | None = None  # bank's first release
     last_disbursed_on: date | None = None  # latest release: the row's date
     tds: Money = Decimal("0")
@@ -58,6 +63,7 @@ class PayoutItem(BaseModel):
     paid_on: date | None = None  # FMC's latest payment to the partner
     # The student's most recent partner invoice (one student can be on several).
     invoice_number: str | None = None
+    invoice_amount: OptMoney = None
     invoice_date: date | None = None
     invoice_due_date: date | None = None
     invoice_status: str | None = None  # 'raised' | 'paid' | 'cancelled'

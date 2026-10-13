@@ -84,26 +84,37 @@ def _summary(rows: list[dict[str, Any]]) -> PayoutSummary:
 
     today = _today()
 
-    def pending_in(state: str) -> Decimal:
-        return total("payout_pending", lambda r: _invoice_state(r, today) == state)
+    # Pending money by invoice state. An open invoice covers at most its own
+    # amount (no amount recorded -> it covers all the row's pending); the rest
+    # of that row's pending isn't invoiced yet.
+    split = {"not_raised": Decimal("0"), "raised": Decimal("0"), "overdue": Decimal("0")}
+    for r in rows:
+        pending, state = _exact(r.get("payout_pending")), _invoice_state(r, today)
+        amount = r.get("partner_invoice_amount")
+        covered = pending if state == "not_raised" or amount is None else min(pending, _exact(amount))
+        split[state] += covered
+        split["not_raised"] += pending - covered
+    raised = split["raised"].quantize(_CENT, rounding=ROUND_HALF_UP)
+    overdue = split["overdue"].quantize(_CENT, rounding=ROUND_HALF_UP)
 
-    paid, tds = total("payout_paid"), total("payout_tds")
+    paid, tds, pending_total = total("payout_paid"), total("payout_tds"), total("payout_pending")
+    overpaid = sum((_overpaid(r) for r in rows), Decimal("0")).quantize(_CENT, rounding=ROUND_HALF_UP)
 
     return PayoutSummary(
         students=len({r["lead_id"] for r in rows}),
         loan_total=total("loan_amount"),
         earned=total("payout_earned"),
         paid=paid,
-        pending=total("payout_pending"),
-        overpaid=sum((_overpaid(r) for r in rows), Decimal("0")).quantize(
-            _CENT, rounding=ROUND_HALF_UP
-        ),
-        # Net from the same exact totals, so cash + TDS always equals paid.
-        cash_transferred=paid - tds,
+        pending=pending_total,
+        overpaid=overpaid,
+        balance=pending_total - overpaid,
+        # The pie adds up to earned: overpayment is shown apart, not as a slice.
+        cash_transferred=max(paid - overpaid - tds, Decimal("0")),
         tds=tds,
-        invoice_not_raised=pending_in("not_raised"),
-        invoice_raised=pending_in("raised"),
-        invoice_overdue=pending_in("overdue"),
+        # Remainder, so the three pending slices always add up to pending.
+        invoice_not_raised=pending_total - raised - overdue,
+        invoice_raised=raised,
+        invoice_overdue=overdue,
     )
 
 
@@ -130,10 +141,13 @@ def _item_fields(r: dict[str, Any]) -> dict[str, Any]:
         paid=_money(r.get("payout_paid")),
         pending=_money(r.get("payout_pending")),
         overpaid=_overpaid(r).quantize(_CENT, rounding=ROUND_HALF_UP),
+        balance=_money(r.get("payout_pending"))
+        - _overpaid(r).quantize(_CENT, rounding=ROUND_HALF_UP),
         tds=_money(r.get("payout_tds")),
         net_paid=_money(r.get("payout_paid")) - _money(r.get("payout_tds")),
         paid_on=r.get("payout_paid_on"),
         invoice_number=r.get("partner_invoice_number"),
+        invoice_amount=_opt_money(r.get("partner_invoice_amount")),
         invoice_date=r.get("partner_invoice_date"),
         invoice_due_date=r.get("partner_invoice_due_date"),
         invoice_status=r.get("partner_invoice_status"),
