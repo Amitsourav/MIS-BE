@@ -17,12 +17,14 @@ class ProviderCreate(BaseModel):
     brand: Brand | None = None
     contact_email: EmailStr | None = None
     is_active: bool = True
+    is_demo: bool = False
 
 
 class ProviderUpdate(BaseModel):
     name: str | None = None
     contact_email: EmailStr | None = None
     is_active: bool | None = None
+    is_demo: bool | None = None
 
 
 class ProviderOut(BaseModel):
@@ -33,6 +35,7 @@ class ProviderOut(BaseModel):
     brand: Brand
     contact_email: str | None
     is_active: bool
+    is_demo: bool = False
     created_at: datetime
     updated_at: datetime
 

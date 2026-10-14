@@ -48,7 +48,10 @@ async def login(
             subject=str(pu.id), role="provider", provider_id=str(pu.provider_id)
         )
         return TokenResponse(
-            access_token=token, role="provider", provider_id=str(pu.provider_id)
+            access_token=token,
+            role="provider",
+            provider_id=str(pu.provider_id),
+            is_demo=provider.is_demo,
         )
 
     # Else try admin login.
@@ -103,4 +106,5 @@ async def me(
         provider_id=str(pu.provider_id),
         provider_name=provider.name if provider else None,
         brand=provider.brand.value if provider else None,
+        is_demo=bool(provider and provider.is_demo),
     )

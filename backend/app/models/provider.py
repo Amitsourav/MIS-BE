@@ -11,6 +11,7 @@ from sqlalchemy import (
     ForeignKey,
     String,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -34,6 +35,11 @@ class Provider(Base):
     brand: Mapped[Brand] = mapped_column(Enum(Brand, name="brand", values_callable=lambda e: [m.value for m in e]), nullable=False)
     contact_email: Mapped[str | None] = mapped_column(String, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # A sales-demo partner (mapped to the CRM's fake "Demo" sources). Kept out
+    # of the admin leaderboard; its own portal works normally.
+    is_demo: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
+    )
     payout_config: Mapped[dict] = mapped_column(JsonType, default=dict)  # Phase 2
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

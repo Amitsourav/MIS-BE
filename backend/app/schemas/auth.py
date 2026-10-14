@@ -16,6 +16,8 @@ class TokenResponse(BaseModel):
     provider_id: str | None = None
     # Admin company scope: null = super-admin (both companies); 'fmc'/'av' = company admin.
     brand: str | None = None
+    # Provider logins only: a sales-demo partner (the portal shows "AI Calling").
+    is_demo: bool = False
 
 
 class MeResponse(BaseModel):
@@ -26,3 +28,5 @@ class MeResponse(BaseModel):
     provider_name: str | None = None
     # For admins: their company scope (null = super-admin). For providers: their company.
     brand: str | None = None
+    # Provider logins only: a sales-demo partner (the portal shows "AI Calling").
+    is_demo: bool = False

@@ -151,6 +151,7 @@ async def create_provider(
         brand=brand,
         contact_email=body.contact_email,
         is_active=body.is_active,
+        is_demo=body.is_demo,
     )
     db.add(provider)
     await db.commit()
@@ -471,7 +472,11 @@ async def leaderboard(
         mapped = await db.execute(
             select(Provider, ProviderSource.crm_source_id)
             .join(ProviderSource, ProviderSource.provider_id == Provider.id)
-            .where(Provider.brand == brand, ProviderSource.brand == brand)
+            .where(
+                Provider.brand == brand,
+                ProviderSource.brand == brand,
+                Provider.is_demo.is_(False),  # sales demos never rank against real partners
+            )
         )
         provider_by_source: dict[uuid.UUID, Provider] = {}
         for p, sid in mapped.all():
