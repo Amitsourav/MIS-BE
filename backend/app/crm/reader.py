@@ -9,14 +9,21 @@ always call them as `reader.lead_rows(...)`, never `from ... import lead_rows`.
 """
 from __future__ import annotations
 
+import json
+import logging
 import uuid
 from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
+
+import asyncpg
 
 from app.config import settings
 from app.crm import pool
 from app.crm.stage_map import CRM_SCHEMAS, raw_stages_for
 from app.models.enums import Brand, CanonicalStage
+
+logger = logging.getLogger("mis.crm")
 
 
 def _nphone(col: str) -> str:
@@ -60,11 +67,19 @@ def _lead_sql(brand: Brand) -> str:
                 END AS is_duplicate
             FROM base b
         ),
-        scoped AS (
-            SELECT * FROM flagged f
+        numbered AS (
+            -- The partner's own lead number: 1, 2, 3... over ALL their leads
+            -- in arrival order, before the date window, so a lead keeps its
+            -- number whatever the filter. (Twin of `_lead_no_join`.)
+            SELECT f.*,
+                row_number() OVER (ORDER BY f.created_at, f.crm_lead_id) AS lead_no
+            FROM flagged f
             WHERE f.crm_source_id = ANY($1::uuid[])
-              AND ($6::timestamptz IS NULL OR f.created_at >= $6)
-              AND ($7::timestamptz IS NULL OR f.created_at <  $7)
+        ),
+        scoped AS (
+            SELECT * FROM numbered n
+            WHERE ($6::timestamptz IS NULL OR n.created_at >= $6)
+              AND ($7::timestamptz IS NULL OR n.created_at <  $7)
         ),
         milestones AS (
             -- One pass over the logs, grouped by lead. (A per-lead lookup is
@@ -110,6 +125,19 @@ async def lead_rows(
     return [dict(r) for r in rows]
 
 
+def _lead_no_join(lead_col: str) -> str:
+    """LEFT JOIN giving `ln.lead_no` (the partner's own 1, 2, 3...) for
+    `lead_col`, numbered exactly as in `_lead_sql`. Uses $1 = source ids."""
+    s = CRM_SCHEMAS[Brand.FMC]
+    return f"""
+    LEFT JOIN (
+        SELECT x.{s.lead_id} AS id,
+               row_number() OVER (ORDER BY x.{s.lead_created}, x.{s.lead_id}) AS lead_no
+        FROM {s.leads_table} x
+        WHERE NOT x.{s.lead_deleted} AND x.{s.lead_source_fk} = ANY($1::uuid[])
+    ) ln ON ln.id = {lead_col}"""
+
+
 _PAYOUT_SQL = """
     SELECT
         p.lead_bank_id, p.lead_id, p.lead_source_id, p.bank_name, p.loan_amount,
@@ -118,9 +146,10 @@ _PAYOUT_SQL = """
         p.first_disbursed_on, p.last_disbursed_on, p.sanction_date,
         p.payout_tds, p.payout_paid_on, p.partner_invoice_number, p.partner_invoice_date,
         p.partner_invoice_due_date, p.partner_invoice_status, p.partner_invoice_amount,
-        l.serial_no, l.full_name
+        l.full_name, ln.lead_no
     FROM public.mis_partner_payouts p
     LEFT JOIN public.leads l ON l.id = p.lead_id
+    """ + _lead_no_join("p.lead_id") + """
     WHERE p.lead_source_id = ANY($1::uuid[])
       AND ($2::date IS NULL OR p.last_disbursed_on >= $2)
       AND ($3::date IS NULL OR p.last_disbursed_on <= $3)
@@ -183,6 +212,46 @@ async def disbursement_rows(
         return []
     rows = await pool.fetch(brand, _DISBURSEMENT_SQL, list(source_ids))
     return [dict(r) for r in rows]
+
+
+_LEAD_INFO_SQL = """
+    SELECT i.lead_id, i.counsellor_name, i.loan_amount_lakh, i.lenders
+    FROM public.mis_partner_lead_info i
+    WHERE i.lead_source_id = ANY($1::uuid[])
+      AND ($2::uuid[] IS NULL OR i.lead_id = ANY($2::uuid[]))
+"""
+
+
+async def lead_info_rows(
+    brand: Brand,
+    source_ids: list[uuid.UUID],
+    lead_ids: list[uuid.UUID] | None = None,
+) -> list[dict[str, Any]]:
+    """Counsellor and post-login lenders per lead (CRM view
+    `mis_partner_lead_info`), for `source_ids`, optionally only `lead_ids`.
+    `lenders` is a list of dicts. A CRM without the view yet returns [] so
+    the Leads page still works, just without these details."""
+    if not source_ids or lead_ids == []:
+        return []
+    try:
+        rows = await pool.fetch(
+            brand, _LEAD_INFO_SQL, list(source_ids),
+            None if lead_ids is None else list(lead_ids),
+        )
+    except (asyncpg.exceptions.UndefinedTableError,
+            asyncpg.exceptions.InsufficientPrivilegeError) as exc:
+        logger.warning("CRM %s has no readable mis_partner_lead_info: %s", brand.value, exc)
+        return []
+    out = []
+    for r in rows:
+        row = dict(r)
+        lenders = row.get("lenders")
+        # Exact decimals for amounts (never floats) in the jsonb array.
+        row["lenders"] = (
+            json.loads(lenders, parse_float=Decimal) if isinstance(lenders, str) else (lenders or [])
+        )
+        out.append(row)
+    return out
 
 
 def _reach_sql(brand: Brand) -> str:

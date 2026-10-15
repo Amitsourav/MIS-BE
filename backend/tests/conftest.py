@@ -57,6 +57,8 @@ class FakeCrm:
         self.payouts: list = []  # FMC view rows (+ serial_no/full_name)
         self.releases: list = []  # FMC mis_partner_disbursements rows
         self.sources: dict = {}  # brand -> list[{crm_source_id, name}]
+        # brand -> {lead_id: {lead_source_id, counsellor_name, loan_amount_lakh, lenders}}
+        self.lead_info: dict = {}
         self.down = False
         self.calls: list = []    # (fn, brand, source_ids) for scoping asserts
 
@@ -65,15 +67,35 @@ class FakeCrm:
             from app.crm.pool import CrmUnavailable
             raise CrmUnavailable("The CRM is unavailable right now")
 
+    def _lead_numbers(self, brand, source_ids) -> dict:
+        """lead id -> the partner's 1, 2, 3... over all their leads (SQL twin)."""
+        ids = set(source_ids)
+        mine = sorted(
+            (r for r in self.leads.get(brand, []) if r["crm_source_id"] in ids),
+            key=lambda r: (r["created_at"], str(r["crm_lead_id"])),
+        )
+        return {r["crm_lead_id"]: n for n, r in enumerate(mine, start=1)}
+
     async def lead_rows(self, brand, source_ids, start, end):
         self._check()
         self.calls.append(("lead_rows", brand, list(source_ids)))
         ids = set(source_ids)
+        numbers = self._lead_numbers(brand, source_ids)
         return [
-            dict(r) for r in self.leads.get(brand, [])
+            {**r, "lead_no": numbers[r["crm_lead_id"]]} for r in self.leads.get(brand, [])
             if r["crm_source_id"] in ids
             and (start is None or r["created_at"] >= start)
             and (end is None or r["created_at"] < end)
+        ]
+
+    async def lead_info_rows(self, brand, source_ids, lead_ids=None):
+        self._check()
+        self.calls.append(("lead_info_rows", brand, list(source_ids)))
+        ids = set(source_ids)
+        return [
+            {"lead_id": lid, **{k: v for k, v in info.items() if k != "lead_source_id"}}
+            for lid, info in self.lead_info.get(brand, {}).items()
+            if info["lead_source_id"] in ids and (lead_ids is None or lid in lead_ids)
         ]
 
     async def payout_rows(self, brand, source_ids, date_from, date_to):
@@ -83,8 +105,9 @@ class FakeCrm:
         if brand != Brand.FMC:
             return []
         ids = set(source_ids)
+        numbers = self._lead_numbers(brand, source_ids)
         return [
-            dict(r) for r in self.payouts
+            {**r, "lead_no": numbers.get(r["lead_id"])} for r in self.payouts
             if r["lead_source_id"] in ids
             and (date_from is None
                  or (r["last_disbursed_on"] and r["last_disbursed_on"] >= date_from))
@@ -150,4 +173,5 @@ async def crm(monkeypatch):
     monkeypatch.setattr(reader, "payout_rows_unmapped", fake.payout_rows_unmapped)
     monkeypatch.setattr(reader, "disbursement_rows", fake.disbursement_rows)
     monkeypatch.setattr(reader, "lead_reach_rows", fake.lead_reach_rows)
+    monkeypatch.setattr(reader, "lead_info_rows", fake.lead_info_rows)
     return fake

@@ -11,7 +11,7 @@ import pytest
 from app.core.security import create_access_token, hash_password
 from app.models import AdminUser
 from app.models.enums import Brand
-from tests.factories import make_provider, map_source, payout_row, provider_headers
+from tests.factories import lead_row, make_provider, map_source, payout_row, provider_headers
 
 pytestmark = pytest.mark.asyncio
 
@@ -119,8 +119,10 @@ async def test_date_filter_uses_pf_paid_on(client, db, crm):
 async def test_money_serialises_as_strings(client, db, crm):
     a = await make_provider(db, "A", "pa6@x.com")
     src = await map_source(db, a)
+    student = lead_row(src)
+    crm.leads[Brand.FMC] = [student]
     crm.payouts = [
-        payout_row(src, serial_no=8862, full_name="Riya S"),
+        payout_row(src, lead_id=student["crm_lead_id"], serial_no=8862, full_name="Riya S"),
         payout_row(src, basis="agreed", rate=None, loan=None, earned="25000.00"),  # no lead name
     ]
 
@@ -128,7 +130,9 @@ async def test_money_serialises_as_strings(client, db, crm):
     by_basis = {i["payout_basis"]: i for i in body["items"]}
 
     rate_row = by_basis["rate"]
-    assert rate_row["serial_no"] == 8862 and rate_row["full_name"] == "Riya S"
+    # The partner's own number for the student, never FMC's serial 8862.
+    assert rate_row["lead_no"] == 1 and rate_row["full_name"] == "Riya S"
+    assert "8862" not in str(body)
     assert rate_row["payout_rate"] == "0.60"
     for key in ("loan_amount", "disbursed_total", "earned", "paid", "pending"):
         assert isinstance(rate_row[key], str)
@@ -137,7 +141,7 @@ async def test_money_serialises_as_strings(client, db, crm):
     assert rate_row["pf_paid_on"] == "2026-08-20"
     assert rate_row["earned"] == "10800.00"
     assert set(rate_row) == {
-        "serial_no", "full_name", "bank_name", "loan_amount", "pf_paid_on",
+        "lead_no", "full_name", "bank_name", "loan_amount", "pf_paid_on",
         "disbursed_total", "payout_basis", "payout_rate", "earned", "paid", "pending",
         "overpaid", "balance", "first_disbursed_on", "last_disbursed_on",
         "tds", "net_paid", "paid_on", "invoice_number", "invoice_amount", "invoice_date",
@@ -161,7 +165,7 @@ async def test_export_returns_all_filtered_rows(client, db, crm):
     assert res.headers["content-type"].startswith("text/csv")
     assert res.text.startswith("\ufeff")
     lines = res.text.lstrip("\ufeff").strip().splitlines()
-    assert lines[0] == ("serial_no,full_name,bank_name,loan_amount,pf_paid_on,"
+    assert lines[0] == ("lead_no,full_name,bank_name,loan_amount,pf_paid_on,"
                         "disbursed_total,payout_basis,payout_rate,earned,paid,pending,overpaid,"
                         "balance,first_disbursed_on,last_disbursed_on,tds,net_paid,paid_on,"
                         "invoice_number,invoice_amount,invoice_date,invoice_due_date,invoice_status")

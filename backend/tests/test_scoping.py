@@ -31,7 +31,7 @@ async def test_provider_cannot_see_other_providers_leads(client, db, crm):
     assert body["total"] == 1
     assert "Bob B" not in str(body)
     # The CRM was only ever asked for A's own source.
-    assert crm.calls == [("lead_rows", Brand.FMC, [sa])]
+    assert crm.calls == [("lead_rows", Brand.FMC, [sa]), ("lead_info_rows", Brand.FMC, [sa])]
 
 
 async def test_overview_counts_are_scoped(client, db, crm):

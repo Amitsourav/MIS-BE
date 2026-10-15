@@ -105,15 +105,20 @@ async def test_leads_table_filters_paging_and_shape(client, db, crm):
     assert page["total"] == 2 and len(page["items"]) == 1
     first = page["items"][0]
     assert first["full_name"] == "Arjun Rao"  # newest first
-    assert first["source_name"] == "Acme Web" and first["brand"] == "fmc"
+    # FMC's serial, the brand and the CRM source are never shown; the
+    # partner gets their own running number (Old Lead=1, Riya=2, Arjun=3).
+    assert not {"serial_no", "brand", "source_name"} & set(first)
+    assert first["lead_no"] == 3
     assert first["canonical_stage"] == "converted"
 
     converted = (await client.get(f"/me/leads?{RANGE}&stage=converted", headers=h)).json()
     assert [i["full_name"] for i in converted["items"]] == ["Arjun Rao"]
     by_name = (await client.get(f"/me/leads?{RANGE}&q=riya", headers=h)).json()
-    assert [i["serial_no"] for i in by_name["items"]] == [11]
+    assert [i["lead_no"] for i in by_name["items"]] == [2]
     by_phone = (await client.get(f"/me/leads?{RANGE}&q=0000002", headers=h)).json()
-    assert [i["serial_no"] for i in by_phone["items"]] == [12]
+    assert [i["lead_no"] for i in by_phone["items"]] == [3]
+    by_no = (await client.get(f"/me/leads?{RANGE}&q=3", headers=h)).json()
+    assert [i["full_name"] for i in by_no["items"]] == ["Arjun Rao"]
 
     everything = (await client.get("/me/leads?all_time=true", headers=h)).json()
     assert everything["total"] == 3
@@ -124,7 +129,10 @@ async def test_leads_table_filters_paging_and_shape(client, db, crm):
     csv_text = (await client.get(f"/me/leads/export?{RANGE}", headers=h)).text
     assert csv_text.startswith("\ufeff")  # BOM so Excel reads UTF-8
     csv_text = csv_text.lstrip("\ufeff")
-    assert csv_text.splitlines()[0].startswith("serial_no,full_name,phone,brand,source,stage")
+    assert csv_text.splitlines()[0] == (
+        "lead_no,full_name,phone,stage,funnel_stage,is_invalid,is_duplicate,created_at,"
+        "counsellor,lender,lender_status,loan_amount,application_no")
+    assert "Acme Web" not in csv_text and "fmc" not in csv_text
     assert len(csv_text.strip().splitlines()) == 3
 
 
@@ -216,8 +224,8 @@ async def test_leads_show_the_crm_stage_name(client, db, crm):
 
     csv_lines = (await client.get(f"/me/leads/export?{RANGE}&crm_stage=sanctioned",
                                   headers=h)).text.lstrip("\ufeff").strip().splitlines()
-    assert csv_lines[0].split(",")[5:7] == ["stage", "funnel_stage"]
-    assert csv_lines[1].split(",")[5:7] == ["Sanctioned", "in_process"]
+    assert csv_lines[0].split(",")[3:5] == ["stage", "funnel_stage"]
+    assert csv_lines[1].split(",")[3:5] == ["Sanctioned", "in_process"]
 
 
 async def test_av_leads_use_admitverse_stage_names(client, db, crm):

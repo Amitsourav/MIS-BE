@@ -43,9 +43,9 @@ class PayoutSummary(BaseModel):
 
 
 class PayoutItem(BaseModel):
-    serial_no: int | None
+    lead_no: int | None  # the partner's own lead number (never FMC's serial)
     full_name: str | None
-    bank_name: str | None
+    bank_name: str | None  # the real bank ("PNB", not "UC PNB"); None on an aggregator
     loan_amount: OptMoney  # sanctioned by this lender
     pf_paid_on: date | None  # information only; no longer the earning date
     disbursed_total: Money  # what the bank has released so far: the payout basis
@@ -81,8 +81,11 @@ class PayoutsResponse(BaseModel):
 
 
 class UnmappedPayoutItem(PayoutItem):
-    """A payout on a CRM source no provider is mapped to (admin only)."""
+    """A payout on a CRM source no provider is mapped to (admin only).
+    Internal: carries FMC's serial and the CRM's own lender/route name."""
 
+    serial_no: int | None = None
+    crm_bank_name: str | None = None
     crm_source_id: str | None
     source_name: str | None
 

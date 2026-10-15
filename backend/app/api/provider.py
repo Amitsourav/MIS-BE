@@ -28,6 +28,7 @@ from app.schemas.payout import PayoutsResponse
 from app.services import charts, live
 from app.services import metrics as M
 from app.services import payouts as P
+from app.services.lead_details import LeadDetails, lead_details
 from app.services.scorecard import compute_scorecard, load_targets
 
 router = APIRouter(prefix="/me", tags=["provider"])
@@ -193,26 +194,27 @@ async def _filtered_leads(
         facts = [
             f for f in facts
             if needle in (f.full_name or "").lower() or needle in (f.phone or "")
+            or needle == str(f.lead_no)  # their lead number, typed exactly
         ]
     epoch = datetime.min.replace(tzinfo=timezone.utc)
     facts.sort(key=lambda f: (f.created_at or epoch, str(f.crm_lead_id)), reverse=True)
     return facts
 
 
-def _lead_out(principal: Principal, f: live.LeadFact) -> LeadOut:
+def _lead_out(f: live.LeadFact, details: LeadDetails | None) -> LeadOut:
     return LeadOut(
         id=f.crm_lead_id,
-        serial_no=f.serial_no,
+        lead_no=f.lead_no,
         full_name=f.full_name,
         phone=f.phone,
-        brand=f.brand,
-        source_name=principal.source_names.get(f.crm_source_id),
         canonical_stage=f.canonical_stage,
         crm_stage=crm_stage_value(f.raw_stage),
         crm_stage_label=crm_stage_label(f.brand, f.raw_stage),
         is_invalid=f.is_invalid,
         is_duplicate=f.is_duplicate,
         created_at=f.created_at,
+        counsellor_name=details.counsellor_name if details else None,
+        lenders=details.lenders if details else [],
     )
 
 
@@ -233,8 +235,11 @@ async def leads(
         principal, brand, stage, date_from, date_to, q, all_time, crm_stage
     )
     window = facts[(page - 1) * page_size : page * page_size]
+    details = await lead_details(
+        principal.brand, principal.source_ids, [f.crm_lead_id for f in window]
+    )
     return Page(
-        items=[_lead_out(principal, f) for f in window],
+        items=[_lead_out(f, details.get(f.crm_lead_id)) for f in window],
         total=len(facts),
         page=page,
         page_size=page_size,
@@ -287,28 +292,43 @@ async def leads_export(
     all_time: bool = Query(False),
     principal: Principal = Depends(require_provider),
 ) -> StreamingResponse:
-    facts = await _filtered_leads(
+    facts = (await _filtered_leads(
         principal, brand, stage, date_from, date_to, q, all_time, crm_stage
-    )
+    ))[:_EXPORT_LIMIT]
+    details = await lead_details(principal.brand, principal.source_ids)
 
+    def lenders_col(d: LeadDetails | None, attr: str) -> str:
+        # One cell per field; several lenders are joined in the same order.
+        if d is None:
+            return ""
+        return "; ".join(
+            "" if getattr(l, attr) is None else str(getattr(l, attr))
+            for l in d.lenders
+        )
+
+    rows = []
+    for f in facts:
+        d = details.get(f.crm_lead_id)
+        rows.append([
+            f.lead_no or "",
+            safe_text(f.full_name or ""),
+            f.phone or "",
+            crm_stage_label(f.brand, f.raw_stage) or "",
+            f.canonical_stage.value,
+            f.is_invalid,
+            f.is_duplicate,
+            f.created_at.isoformat() if f.created_at else "",
+            safe_text((d.counsellor_name if d else None) or ""),
+            safe_text("; ".join(l.bank or "—" for l in d.lenders) if d else ""),
+            lenders_col(d, "status_label"),
+            "; ".join("" if l.amount is None else f"{l.amount:.2f}" for l in d.lenders) if d else "",
+            safe_text(lenders_col(d, "application_no")),
+        ])
     return csv_response(
-        ["serial_no", "full_name", "phone", "brand", "source", "stage",
-         "funnel_stage", "is_invalid", "is_duplicate", "created_at"],
-        (
-            [
-                f.serial_no or "",
-                safe_text(f.full_name or ""),
-                f.phone or "",
-                f.brand.value,
-                safe_text(principal.source_names.get(f.crm_source_id) or ""),
-                crm_stage_label(f.brand, f.raw_stage) or "",
-                f.canonical_stage.value,
-                f.is_invalid,
-                f.is_duplicate,
-                f.created_at.isoformat() if f.created_at else "",
-            ]
-            for f in facts[:_EXPORT_LIMIT]
-        ),
+        ["lead_no", "full_name", "phone", "stage", "funnel_stage", "is_invalid",
+         "is_duplicate", "created_at", "counsellor", "lender", "lender_status",
+         "loan_amount", "application_no"],
+        rows,
         "leads.csv",
     )
 
@@ -370,7 +390,7 @@ async def payouts_export(
         row = it.model_dump(mode="json")
         rows.append(
             [
-                row["serial_no"] or "",
+                row["lead_no"] or "",
                 safe_text(row["full_name"] or ""),
                 safe_text(row["bank_name"] or ""),
                 row["loan_amount"] or "",
@@ -396,7 +416,7 @@ async def payouts_export(
             ]
         )
     return csv_response(
-        ["serial_no", "full_name", "bank_name", "loan_amount", "pf_paid_on",
+        ["lead_no", "full_name", "bank_name", "loan_amount", "pf_paid_on",
          "disbursed_total", "payout_basis", "payout_rate", "earned", "paid",
          "pending", "overpaid", "balance", "first_disbursed_on", "last_disbursed_on",
          "tds", "net_paid", "paid_on", "invoice_number", "invoice_amount", "invoice_date",

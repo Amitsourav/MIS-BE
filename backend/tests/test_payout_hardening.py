@@ -111,7 +111,7 @@ async def test_leads_csv_is_excel_safe(client, db, crm):
     crm.leads[Brand.FMC] = [lead_row(src, full_name="-2+3", phone="9000000001")]
     res = await client.get("/me/leads/export?all_time=true", headers=provider_headers(p))
     row = _csv(res.text)[0]
-    assert row["full_name"] == "'-2+3" and row["source"] == "'@src"
+    assert row["full_name"] == "'-2+3" and "source" not in row
     assert row["phone"] == "9000000001"
 
 
@@ -230,3 +230,13 @@ async def test_admin_sees_payouts_no_partner_can_see(client, db, crm):
     assert (await client.get("/admin/payouts/unmapped", headers=av)).status_code == 403
     assert (await client.get("/admin/payouts/unmapped",
                              headers=provider_headers(p))).status_code == 403
+
+
+async def test_unmapped_payouts_keep_internal_serial_and_route(client, db, crm):
+    """The admin-only unassigned list is internal: FMC serial + CRM route name."""
+    orphan = uuid.uuid4()
+    crm.payouts = [payout_row(orphan, bank="UC PNB", serial_no=8862)]
+    h = await _admin(db, "fa3@x.com", Brand.FMC)
+    item = (await client.get("/admin/payouts/unmapped", headers=h)).json()["items"][0]
+    assert item["serial_no"] == 8862
+    assert item["crm_bank_name"] == "UC PNB" and item["bank_name"] == "PNB"

@@ -16,6 +16,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from app.crm import reader
+from app.crm.lenders import lender_display
 from app.models.enums import Brand
 from app.schemas.payout import (
     PayoutItem,
@@ -126,9 +127,9 @@ def _sort_key(r: dict[str, Any]):
 
 def _item_fields(r: dict[str, Any]) -> dict[str, Any]:
     return dict(
-        serial_no=r.get("serial_no"),
+        lead_no=r.get("lead_no"),
         full_name=r.get("full_name"),
-        bank_name=r.get("bank_name"),
+        bank_name=lender_display(r.get("bank_name")),
         loan_amount=_opt_money(r.get("loan_amount")),
         pf_paid_on=r.get("pf_paid_on"),
         first_disbursed_on=r.get("first_disbursed_on"),
@@ -219,6 +220,8 @@ async def unmapped_payouts(mapped_source_ids: list[uuid.UUID]) -> UnmappedPayout
         items=[
             UnmappedPayoutItem(
                 **_item_fields(r),
+                serial_no=r.get("serial_no"),
+                crm_bank_name=r.get("bank_name"),
                 crm_source_id=str(r["lead_source_id"]) if r.get("lead_source_id") else None,
                 source_name=r.get("source_name"),
             )

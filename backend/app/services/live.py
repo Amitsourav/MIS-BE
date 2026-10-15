@@ -36,6 +36,7 @@ class LeadFact:
     converted_at: datetime | None
     lost_at: datetime | None
     crm_updated_at: datetime | None
+    lead_no: int | None = None  # the partner's own running number (see reader)
 
     @property
     def is_valid(self) -> bool:
@@ -85,6 +86,7 @@ def build_fact(brand: Brand, row: dict[str, Any]) -> LeadFact:
         converted_at=converted_at,
         lost_at=row.get("lost_at"),
         crm_updated_at=row.get("crm_updated_at"),
+        lead_no=row.get("lead_no"),
     )
 
 

@@ -10,8 +10,13 @@ GRANT USAGE ON SCHEMA public TO mis_readonly;
 -- Only the tables the sync actually reads.
 GRANT SELECT ON public.leads, public.lead_sources, public.lead_stage_logs TO mis_readonly;
 
--- FundMyCampus ONLY: the partner-payout view (Payout page). Do not run on Admitverse.
--- GRANT SELECT ON public.mis_partner_payouts TO mis_readonly;
+-- FundMyCampus ONLY: the partner-payout views (Payout page + its monthly graph).
+-- The CRM's own migrations normally grant these. Do not run on Admitverse.
+-- GRANT SELECT ON public.mis_partner_payouts, public.mis_partner_disbursements TO mis_readonly;
+
+-- Leads page details (counsellor + post-login lenders), CRM migration mislead001info.
+-- The CRM migration grants it; without it the Leads page just omits those details.
+-- GRANT SELECT ON public.mis_partner_lead_info TO mis_readonly;
 
 -- Optional: ensure future re-created tables of the same name stay readable.
 -- ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO mis_readonly;
