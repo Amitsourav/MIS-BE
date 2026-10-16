@@ -48,7 +48,7 @@ Existing fields (`earned`, `pending`, `balance`, `paid`, …) are unchanged: the
 - **CSV:** the backend adds `earned_with_gst, pending_with_gst, balance_with_gst` columns at the end. There's nothing to do in the frontend.
 
 ## 5 — Acceptance checks
-1. As Altera: Earned ₹81,195.59 shows **Earned + 18% GST ₹95,810.80**, with "₹81,195.59 + ₹14,615.21 GST" under it.
+1. As Altera: Earned ₹81,195.59 shows **Earned + 18% GST ₹95,810.79**, with "₹81,195.59 + ₹14,615.20 GST" under it.
 2. A row with earned ₹10,800 shows **₹12,744.00** in "Earned + 18% GST".
 3. An overpaid partner's Balance + GST is negative and red.
 4. Paid is unchanged, with no GST.
