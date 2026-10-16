@@ -76,6 +76,11 @@ def _gst(earned: Decimal, pending: Decimal, balance: Decimal) -> dict[str, Decim
     )
 
 
+def _row_gst(r: dict[str, Any]) -> dict[str, Decimal]:
+    return _gst(_exact(r.get("payout_earned")), _exact(r.get("payout_pending")),
+                _exact(r.get("payout_pending")) - _overpaid(r))
+
+
 def _overpaid(r: dict[str, Any]) -> Decimal:
     return max(_exact(r.get("payout_paid")) - _exact(r.get("payout_earned")), Decimal("0"))
 
@@ -115,8 +120,13 @@ def _summary(rows: list[dict[str, Any]]) -> PayoutSummary:
 
     paid, tds, pending_total = total("payout_paid"), total("payout_tds"), total("payout_pending")
     overpaid = sum((_overpaid(r) for r in rows), Decimal("0")).quantize(_CENT, rounding=ROUND_HALF_UP)
-    exact = lambda key: sum((_exact(r.get(key)) for r in rows), Decimal("0"))  # noqa: E731
-    exact_overpaid = sum((_overpaid(r) for r in rows), Decimal("0"))
+    # GST totals are the sum of each row's rounded GST figures, so a partner
+    # adding up the CSV's GST columns gets exactly the page's total.
+    gst = {"gst_rate": _gst(Decimal("0"), Decimal("0"), Decimal("0"))["gst_rate"]}
+    for r in rows:
+        for key, value in _row_gst(r).items():
+            if key != "gst_rate":
+                gst[key] = gst.get(key, Decimal("0")) + value
 
     return PayoutSummary(
         students=len({r["lead_id"] for r in rows}),
@@ -133,8 +143,7 @@ def _summary(rows: list[dict[str, Any]]) -> PayoutSummary:
         invoice_not_raised=pending_total - raised - overdue,
         invoice_raised=raised,
         invoice_overdue=overdue,
-        **_gst(exact("payout_earned"), exact("payout_pending"),
-               exact("payout_pending") - exact_overpaid),
+        **gst,
     )
 
 
@@ -172,8 +181,7 @@ def _item_fields(r: dict[str, Any]) -> dict[str, Any]:
         invoice_due_date=r.get("partner_invoice_due_date"),
         invoice_status=r.get("partner_invoice_status"),
         invoice_state=_invoice_state(r, _today()),
-        **_gst(_exact(r.get("payout_earned")), _exact(r.get("payout_pending")),
-               _exact(r.get("payout_pending")) - _overpaid(r)),
+        **_row_gst(r),
     )
 
 

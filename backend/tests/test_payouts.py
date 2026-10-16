@@ -3,6 +3,9 @@ scoping by mapped sources, AV unsupported, page-independent summary, string
 money, PF-date filter and ordering, export, admin company scope."""
 from __future__ import annotations
 
+import csv
+import io
+from decimal import Decimal
 import uuid
 from datetime import date
 
@@ -58,6 +61,20 @@ async def test_av_provider_is_unsupported_not_an_error(client, db, crm):
     export = await client.get("/provider/payouts/export", headers=provider_headers(av))
     assert export.status_code == 200
     assert export.text.strip().count("\n") == 0  # header only
+
+
+async def test_gst_totals_equal_the_sum_of_the_rows(client, db, crm):
+    """Each row rounds its GST to the paisa; the page total is the sum of the
+    rows, so adding up the CSV gives the page's number exactly."""
+    a = await make_provider(db, "A", "gstsum@x.com")
+    src = await map_source(db, a)
+    # 0.03 x 1.18 = 0.0354 -> 0.04 per row; on the exact total it would be 0.11
+    crm.payouts = [payout_row(src, earned="0.03") for _ in range(3)]
+    s = (await client.get("/provider/payouts", headers=provider_headers(a))).json()["summary"]
+    assert (s["earned_with_gst"], s["earned_gst"], s["gst_rate"]) == ("0.12", "0.03", "18.00")
+    text = (await client.get("/provider/payouts/export", headers=provider_headers(a))).text
+    rows = list(csv.DictReader(io.StringIO(text.lstrip("\ufeff"))))
+    assert sum(Decimal(r["earned_with_gst"]) for r in rows) == Decimal(s["earned_with_gst"])
 
 
 async def test_overpaid_balance_with_gst_stays_negative(client, db, crm):
