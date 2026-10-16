@@ -21,9 +21,10 @@ D2 = datetime(2026, 6, 2, 10, tzinfo=timezone.utc)
 D3 = datetime(2026, 6, 3, 10, tzinfo=timezone.utc)
 
 
-def _lender(bank, status, amount=None, app=None):
+def _lender(bank, status, amount=None, app=None, tranches=None):
     return {"bank_name": bank, "bank_status": status, "loan_amount": amount,
-            "application_id": app, "logged_in_at": None}
+            "application_id": app, "logged_in_at": None, "lead_bank_id": "lb-1",
+            "tranches": tranches or []}
 
 
 @pytest.mark.parametrize("crm_name, shown", [
@@ -67,7 +68,11 @@ async def test_leads_carry_counsellor_and_post_login_lenders(client, db, crm):
         second["crm_lead_id"]: {
             "lead_source_id": src, "counsellor_name": "Rahul M",
             "loan_amount_lakh": Decimal("25.00"),
-            "lenders": [_lender("UC PNB", "sanctioned", Decimal("2000000"), "PNB-77"),
+            "lenders": [_lender("UC PNB", "sanctioned", Decimal("2000000"), "PNB-77", [
+                            # as the view's jsonb gives them: rupees, ISO dates
+                            {"tranche_no": 1, "amount": Decimal("950000.0"), "disbursed_on": "2026-02-01"},
+                            {"tranche_no": 2, "amount": Decimal("868546.005"), "disbursed_on": "2026-06-12"},
+                        ]),
                         _lender("Nomad Normal", "loan_login", None, "NM-1"),
                         _lender("Credila Hemant", "lost", None, None)],
         },
@@ -96,13 +101,17 @@ async def test_leads_carry_counsellor_and_post_login_lenders(client, db, crm):
     assert arjun["counsellor_name"] == "Rahul M"
     assert arjun["lenders"] == [
         {"bank": "PNB", "status": "sanctioned", "status_label": "Sanctioned",
-         "amount": "2000000.00", "amount_kind": "sanctioned", "application_no": "PNB-77"},
+         "amount": "2000000.00", "amount_kind": "sanctioned", "application_no": "PNB-77",
+         "tranches": [
+             {"tranche_no": 1, "amount": "950000.00", "disbursed_on": "2026-02-01"},
+             {"tranche_no": 2, "amount": "868546.01", "disbursed_on": "2026-06-12"},
+         ]},
         {"bank": None, "status": "loan_login", "status_label": "Logged in",  # aggregator hidden
-         "amount": "2500000.00", "amount_kind": "applied", "application_no": "NM-1"},
+         "amount": "2500000.00", "amount_kind": "applied", "application_no": "NM-1", "tranches": []},
         {"bank": "Credila", "status": "lost", "status_label": "Declined",
-         "amount": "2500000.00", "amount_kind": "applied", "application_no": None},
+         "amount": "2500000.00", "amount_kind": "applied", "application_no": None, "tranches": []},
     ]
-    assert "UC PNB" not in str(body) and "Nomad" not in str(body)
+    assert "UC PNB" not in str(body) and "Nomad" not in str(body) and "lb-1" not in str(body)
 
     meera = by_name["Meera"]["lenders"][0]
     assert (meera["bank"], meera["amount"], meera["amount_kind"]) == ("Axis", "1850000.00", "applied")

@@ -38,6 +38,15 @@ class Settings(BaseSettings):
     crm_query_timeout_sec: float = 30.0
     duplicate_window_days: int = 30
 
+    # --- CRM HTTP API (partner chat; a key minted with scope "mis") ---
+    # The Demo Loans company lives in the FMC CRM but needs its own key.
+    fmc_crm_api_url: str | None = None  # e.g. https://be-crm-production.up.railway.app/api/v1
+    fmc_crm_api_key: str | None = None
+    fmc_demo_crm_api_key: str | None = None
+    av_crm_api_url: str | None = None
+    av_crm_api_key: str | None = None
+    crm_api_timeout_sec: float = 10.0
+
     # --- CORS ---
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
@@ -52,6 +61,16 @@ class Settings(BaseSettings):
     def crm_dsn(self, brand: str) -> str | None:
         """Return the read-only DSN for a brand ('fmc' | 'av')."""
         return {"fmc": self.fmc_db_url, "av": self.av_db_url}.get(brand)
+
+    def crm_api(self, brand: str, demo: bool = False) -> tuple[str, str] | None:
+        """(base url, key) of a brand's CRM API for partner chat, or None."""
+        if brand == "fmc":
+            url, key = self.fmc_crm_api_url, (self.fmc_demo_crm_api_key if demo else self.fmc_crm_api_key)
+        elif brand == "av":
+            url, key = self.av_crm_api_url, self.av_crm_api_key
+        else:
+            return None
+        return (url.rstrip("/"), key) if url and key else None
 
 
 @lru_cache

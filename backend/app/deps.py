@@ -46,6 +46,9 @@ class Principal:
     source_ids: list[uuid.UUID] = field(default_factory=list)
     source_names: dict[uuid.UUID, str | None] = field(default_factory=dict)
     issued_at: int | None = None  # token "iat" (unix seconds)
+    # provider only: the vendor's name and whether it is a sales demo
+    provider_name: str | None = None
+    is_demo: bool = False
 
     @property
     def is_super_admin(self) -> bool:
@@ -134,6 +137,8 @@ async def require_provider(
         raise _FORBIDDEN
 
     principal.brand = provider.brand  # the vendor's single company
+    principal.provider_name = provider.name
+    principal.is_demo = bool(provider.is_demo)
     rows = await db.execute(
         select(ProviderSource.crm_source_id, ProviderSource.source_name).where(
             ProviderSource.provider_id == principal.provider_id,

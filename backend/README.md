@@ -98,6 +98,13 @@ May 2026; AV has a ~17-stage pipeline). CRM table/column names are also overrida
 · `/me/quality` · `/me/leads` · `/me/leads/export` · `/me/leads/{id}` (lead page: row +
 stage history + its payouts; another partner's lead is 404)
 
+**Partner chat (provider)** — `GET/POST /me/leads/{id}/messages` · `GET /me/messages/latest`.
+The thread lives in the CRM (counsellor and admins reply there); the MIS relays it
+through BE-CRM `/api/v1/mis/*` with a `mis`-scoped API key (`FMC_CRM_API_URL`,
+`FMC_CRM_API_KEY`, `FMC_DEMO_CRM_API_KEY` for demo partners, `AV_CRM_API_*`), sending
+only the caller's own source ids. Unset key or CRM down → 503 on chat only. The MIS
+stores just each login's last-read time (`lead_chat_reads`) for unread dots.
+
 **Payouts (provider, FMC only)** — `GET /provider/payouts` · `/provider/payouts/export`
 (`date_from`/`date_to` filter on `last_disbursed_on`, the bank's latest release; omitted = all time; AV providers get
 `brand_supported: false`). Money is returned as 2-dp strings.

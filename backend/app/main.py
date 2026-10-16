@@ -15,6 +15,7 @@ from app import __version__
 from app.api import admin, auth, provider
 from app.config import settings
 from app.core.ratelimit import limiter
+from app.crm.chat import ChatError, ChatUnavailable
 from app.crm.pool import CrmUnavailable, close_pools
 
 logging.basicConfig(
@@ -49,6 +50,18 @@ app.add_middleware(SlowAPIMiddleware)
 @app.exception_handler(CrmUnavailable)
 async def _crm_unavailable(_: Request, exc: CrmUnavailable) -> JSONResponse:
     return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+@app.exception_handler(ChatUnavailable)
+async def _chat_unavailable(_: Request, exc: ChatUnavailable) -> JSONResponse:
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
+# The CRM's 404 / 422 / 429 on a chat call, passed on to the partner.
+@app.exception_handler(ChatError)
+async def _chat_error(_: Request, exc: ChatError) -> JSONResponse:
+    detail = "Lead not found" if exc.status == 404 else exc.detail
+    return JSONResponse(status_code=exc.status, content={"detail": detail})
 
 
 # CORS

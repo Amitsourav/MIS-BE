@@ -187,3 +187,73 @@ async def crm(monkeypatch):
     monkeypatch.setattr(reader, "lead_info_rows", fake.lead_info_rows)
     monkeypatch.setattr(reader, "stage_history", fake.stage_history)
     return fake
+
+
+class FakeChat:
+    """In-memory stand-in for `app.crm.chat` (the CRM's /mis/* API). Like the
+    CRM, it 404s a lead that isn't in the given source ids."""
+
+    def __init__(self, crm: FakeCrm) -> None:
+        self.crm = crm
+        self.threads: dict = {}  # lead id -> {"counsellor_name", "items": [...]}
+        self.posts: list = []    # every post call's kwargs (+ brand, demo)
+        self.calls: list = []    # (fn, brand, demo, source_ids)
+        self.down = False
+
+    def _scope(self, brand, source_ids, lead_id):
+        from app.crm.chat import ChatError, ChatUnavailable
+        if self.down:
+            raise ChatUnavailable("Chat is unavailable right now")
+        ids = set(source_ids)
+        if not any(r["crm_lead_id"] == lead_id and r["crm_source_id"] in ids
+                   for r in self.crm.leads.get(brand, [])):
+            raise ChatError(404, "Lead not found")
+
+    async def thread(self, brand, demo, source_ids, lead_id):
+        self.calls.append(("thread", brand, demo, list(source_ids)))
+        self._scope(brand, source_ids, lead_id)
+        t = self.threads.get(lead_id, {"counsellor_name": None, "items": []})
+        return {"counsellor_name": t["counsellor_name"], "items": list(t["items"])}
+
+    async def post(self, brand, demo, source_ids, lead_id, **kw):
+        self.calls.append(("post", brand, demo, list(source_ids)))
+        self._scope(brand, source_ids, lead_id)
+        for t in self.threads.values():  # idempotent on message_id
+            for m in t["items"]:
+                if m["id"] == str(kw["message_id"]):
+                    return m
+        self.posts.append({**kw, "brand": brand, "demo": demo, "lead_id": lead_id})
+        from datetime import datetime, timezone
+        item = {"id": str(kw["message_id"]), "author_kind": "partner",
+                "author_name": kw["partner_name"], "author_role": "partner",
+                "body": kw["body"], "is_hidden": False,
+                "tags": kw["tags"] or ["counsellor"],
+                "created_at": datetime.now(timezone.utc).isoformat()}
+        self.threads.setdefault(lead_id, {"counsellor_name": None, "items": []})["items"].append(item)
+        return item
+
+    async def latest(self, brand, demo, source_ids):
+        self.calls.append(("latest", brand, demo, list(source_ids)))
+        if self.down:
+            from app.crm.chat import ChatUnavailable
+            raise ChatUnavailable("Chat is unavailable right now")
+        ids = set(source_ids)
+        mine = {r["crm_lead_id"] for r in self.crm.leads.get(brand, []) if r["crm_source_id"] in ids}
+        out = []
+        for lid, t in self.threads.items():
+            if lid in mine and t["items"]:
+                staff = [m["created_at"] for m in t["items"] if m["author_kind"] == "staff"]
+                out.append({"lead_id": lid, "last_message_at": t["items"][-1]["created_at"],
+                            "last_staff_message_at": staff[-1] if staff else None})
+        return out
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def chat(monkeypatch, crm):
+    from app.crm import chat as chat_mod
+
+    fake = FakeChat(crm)
+    monkeypatch.setattr(chat_mod, "thread", fake.thread)
+    monkeypatch.setattr(chat_mod, "post", fake.post)
+    monkeypatch.setattr(chat_mod, "latest", fake.latest)
+    return fake

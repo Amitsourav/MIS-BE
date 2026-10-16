@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 from app.crm import reader
 from app.crm.lenders import lender_display
 from app.models.enums import Brand
-from app.schemas.lead import LeadLenderOut
+from app.schemas.lead import LeadLenderOut, LeadTrancheOut
 
 _CENT = Decimal("0.01")
 _LAKH = Decimal("100000")
@@ -37,6 +38,16 @@ def _money(value: Any) -> Decimal | None:
     return Decimal(str(value)).quantize(_CENT, rounding=ROUND_HALF_UP)
 
 
+def _day(value: Any) -> date | None:
+    """The view's jsonb gives dates as ISO strings."""
+    if value is None or isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
 def _lender(raw: dict[str, Any], applied: Decimal | None) -> LeadLenderOut:
     status = str(raw.get("bank_status") or "")
     sanctioned = _money(raw.get("loan_amount"))
@@ -53,6 +64,14 @@ def _lender(raw: dict[str, Any], applied: Decimal | None) -> LeadLenderOut:
         amount=amount,
         amount_kind=kind,
         application_no=(raw.get("application_id") or None),
+        tranches=[
+            LeadTrancheOut(
+                tranche_no=t.get("tranche_no"),
+                amount=_money(t.get("amount")),
+                disbursed_on=_day(t.get("disbursed_on")),
+            )
+            for t in raw.get("tranches") or []
+        ],
     )
 
 

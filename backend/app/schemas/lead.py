@@ -2,12 +2,20 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import CanonicalStage
 from app.schemas.payout import OptMoney, PayoutItem
+
+
+class LeadTrancheOut(BaseModel):
+    """One release of money by the lender on this file."""
+
+    tranche_no: int | None
+    amount: OptMoney = None
+    disbursed_on: date | None = None
 
 
 class LeadLenderOut(BaseModel):
@@ -23,6 +31,7 @@ class LeadLenderOut(BaseModel):
     # (before a sanction); None when neither is known.
     amount_kind: str | None = None
     application_no: str | None = None
+    tranches: list[LeadTrancheOut] = []  # every release so far, tranche 1 first
 
 
 class LeadOut(BaseModel):

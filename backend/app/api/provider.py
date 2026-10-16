@@ -9,6 +9,8 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.csvsafe import csv_response, safe_text
@@ -17,7 +19,9 @@ from app.deps import Principal, require_provider
 from app.models.enums import Brand, CanonicalStage
 from app.schemas.common import Page
 from app.crm.stage_map import crm_stage_label, crm_stage_order, crm_stage_value
-from app.crm import reader
+from app.crm import chat, reader
+from app.models import LeadChatRead, ProviderUser
+from app.schemas.chat import ChatLatestOut, ChatMessageOut, ChatPostIn, ChatThreadOut
 from app.schemas.lead import CrmStageCount, LeadDetailOut, LeadOut, StageEventOut
 from app.schemas.metrics import (
     BrandSplitResponse,
@@ -373,6 +377,95 @@ async def lead_detail(
         ],
         payouts=payouts,
     )
+
+
+# --- partner chat on a lead (messages live in the CRM; app/crm/chat.py) ---
+async def _mark_read(db: AsyncSession, principal: Principal, lead_id: uuid.UUID) -> None:
+    user_id = uuid.UUID(principal.user_id)
+    now = datetime.now(timezone.utc)
+    row = (await db.execute(select(LeadChatRead).where(
+        LeadChatRead.provider_user_id == user_id, LeadChatRead.crm_lead_id == lead_id,
+    ))).scalar_one_or_none()
+    if row is None:
+        db.add(LeadChatRead(provider_user_id=user_id, crm_lead_id=lead_id, last_read_at=now))
+    else:
+        row.last_read_at = now
+    try:
+        await db.commit()
+    except IntegrityError:  # the same login opened it twice at once: either wins
+        await db.rollback()
+
+
+def _chat_brand(principal: Principal) -> Brand:
+    if principal.brand is None:
+        raise HTTPException(404, "Lead not found")
+    return principal.brand
+
+
+@router.get("/leads/{lead_id}/messages", response_model=ChatThreadOut)
+async def lead_messages(
+    lead_id: uuid.UUID,
+    principal: Principal = Depends(require_provider),
+    db: AsyncSession = Depends(get_db),
+) -> ChatThreadOut:
+    """The lead's chat with its counsellor and the company's team, oldest
+    first. Opening it marks staff replies as read for this login."""
+    out = ChatThreadOut.model_validate(await chat.thread(
+        _chat_brand(principal), principal.is_demo, principal.source_ids, lead_id
+    ))
+    await _mark_read(db, principal, lead_id)
+    return out
+
+
+@router.post("/leads/{lead_id}/messages", response_model=ChatMessageOut, status_code=201)
+async def post_lead_message(
+    lead_id: uuid.UUID,
+    body: ChatPostIn,
+    principal: Principal = Depends(require_provider),
+    db: AsyncSession = Depends(get_db),
+) -> ChatMessageOut:
+    """Message the counsellor and/or admins about this lead. Tag
+    "counsellor", "admin" or both; no tag goes to the counsellor."""
+    text = body.body.strip()
+    if not text:
+        raise HTTPException(422, "Message is empty")
+    user = await db.get(ProviderUser, uuid.UUID(principal.user_id))
+    out = ChatMessageOut.model_validate(await chat.post(
+        _chat_brand(principal), principal.is_demo, principal.source_ids, lead_id,
+        message_id=body.client_message_id or uuid.uuid4(),
+        partner_name=principal.provider_name or "Partner",
+        partner_user_email=user.email if user else None,
+        body=text,
+        tags=list(dict.fromkeys(body.tags)),
+    ))
+    await _mark_read(db, principal, lead_id)
+    return out
+
+
+@router.get("/messages/latest", response_model=list[ChatLatestOut])
+async def messages_latest(
+    principal: Principal = Depends(require_provider),
+    db: AsyncSession = Depends(get_db),
+) -> list[ChatLatestOut]:
+    """Leads with chat messages, and whether a staff reply is unread — for
+    the "new reply" dots on the Leads table."""
+    if principal.brand is None:
+        return []
+    rows = await chat.latest(principal.brand, principal.is_demo, principal.source_ids)
+    read = dict((await db.execute(
+        select(LeadChatRead.crm_lead_id, LeadChatRead.last_read_at).where(
+            LeadChatRead.provider_user_id == uuid.UUID(principal.user_id)
+        )
+    )).all())
+    out = []
+    for r in rows:
+        item = ChatLatestOut(**r, unread=False)
+        staff, seen = item.last_staff_message_at, read.get(item.lead_id)
+        if seen is not None and seen.tzinfo is None:  # SQLite drops tz; stored UTC
+            seen = seen.replace(tzinfo=timezone.utc)
+        item.unread = staff is not None and (seen is None or staff > seen)
+        out.append(item)
+    return out
 
 
 # --- partner payouts (Payout page) ---
