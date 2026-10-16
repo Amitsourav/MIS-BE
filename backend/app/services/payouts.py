@@ -209,6 +209,14 @@ async def payout_items_for_export(
     return [_to_item(r) for r in rows]
 
 
+async def lead_payout_items(
+    provider_brand: Brand | None, source_ids: list[uuid.UUID], lead_id: uuid.UUID
+) -> list[PayoutItem]:
+    """The caller's payout rows for one student (one per lender file)."""
+    rows = await _scoped_rows(provider_brand, source_ids, None, None)
+    return [_to_item(r) for r in rows if r["lead_id"] == lead_id]
+
+
 async def unmapped_payouts(mapped_source_ids: list[uuid.UUID]) -> UnmappedPayoutsResponse:
     """FMC payouts on sources no provider is mapped to: money in the CRM that
     no partner can see. Admin only."""

@@ -95,7 +95,8 @@ May 2026; AV has a ~17-stage pipeline). CRM table/column names are also overrida
 **Auth** — `POST /auth/login` · `POST /auth/logout` · `GET /auth/me`
 
 **Provider (scoped to caller)** — `GET /me/overview` · `/me/trends` · `/me/brand-split`
-· `/me/quality` · `/me/leads` · `/me/leads/export`
+· `/me/quality` · `/me/leads` · `/me/leads/export` · `/me/leads/{id}` (lead page: row +
+stage history + its payouts; another partner's lead is 404)
 
 **Payouts (provider, FMC only)** — `GET /provider/payouts` · `/provider/payouts/export`
 (`date_from`/`date_to` filter on `last_disbursed_on`, the bank's latest release; omitted = all time; AV providers get

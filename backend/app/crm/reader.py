@@ -80,6 +80,7 @@ def _lead_sql(brand: Brand) -> str:
             SELECT * FROM numbered n
             WHERE ($6::timestamptz IS NULL OR n.created_at >= $6)
               AND ($7::timestamptz IS NULL OR n.created_at <  $7)
+              AND ($8::uuid IS NULL OR n.crm_lead_id = $8)
         ),
         milestones AS (
             -- One pass over the logs, grouped by lead. (A per-lead lookup is
@@ -105,10 +106,12 @@ async def lead_rows(
     source_ids: list[uuid.UUID],
     start: datetime | None,
     end: datetime | None,
+    lead_id: uuid.UUID | None = None,
 ) -> list[dict[str, Any]]:
     """Every non-deleted lead from `source_ids`, created in [start, end)
     (None = unbounded), with its duplicate flag and first-reached milestone
-    timestamps from the stage logs."""
+    timestamps from the stage logs. `lead_id` narrows it to that one lead
+    (its number and duplicate flag are still worked out over all leads)."""
     if not source_ids:
         return []
     rows = await pool.fetch(
@@ -121,7 +124,32 @@ async def lead_rows(
         raw_stages_for(brand, CanonicalStage.LOST),
         start,
         end,
+        lead_id,
     )
+    return [dict(r) for r in rows]
+
+
+def _history_sql(brand: Brand) -> str:
+    s = CRM_SCHEMAS[brand]
+    return f"""
+        SELECT g.{s.log_stage}::text AS to_stage, g.{s.log_created} AS at
+        FROM {s.stage_logs_table} g
+        JOIN {s.leads_table} l ON l.{s.lead_id} = g.{s.log_lead_fk}
+        WHERE g.{s.log_lead_fk} = $2
+          AND NOT l.{s.lead_deleted}
+          AND l.{s.lead_source_fk} = ANY($1::uuid[])
+        ORDER BY g.{s.log_created}
+    """
+
+
+async def stage_history(
+    brand: Brand, source_ids: list[uuid.UUID], lead_id: uuid.UUID
+) -> list[dict[str, Any]]:
+    """Every stage move of one lead, oldest first — only if the lead is from
+    one of `source_ids`. (One pass over the logs: fine for a single lead.)"""
+    if not source_ids:
+        return []
+    rows = await pool.fetch(brand, _history_sql(brand), list(source_ids), lead_id)
     return [dict(r) for r in rows]
 
 

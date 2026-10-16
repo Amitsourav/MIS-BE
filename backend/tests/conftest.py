@@ -59,6 +59,7 @@ class FakeCrm:
         self.sources: dict = {}  # brand -> list[{crm_source_id, name}]
         # brand -> {lead_id: {lead_source_id, counsellor_name, loan_amount_lakh, lenders}}
         self.lead_info: dict = {}
+        self.history: dict = {}  # lead id -> [{to_stage, at}], oldest first
         self.down = False
         self.calls: list = []    # (fn, brand, source_ids) for scoping asserts
 
@@ -76,7 +77,7 @@ class FakeCrm:
         )
         return {r["crm_lead_id"]: n for n, r in enumerate(mine, start=1)}
 
-    async def lead_rows(self, brand, source_ids, start, end):
+    async def lead_rows(self, brand, source_ids, start, end, lead_id=None):
         self._check()
         self.calls.append(("lead_rows", brand, list(source_ids)))
         ids = set(source_ids)
@@ -84,9 +85,19 @@ class FakeCrm:
         return [
             {**r, "lead_no": numbers[r["crm_lead_id"]]} for r in self.leads.get(brand, [])
             if r["crm_source_id"] in ids
+            and (lead_id is None or r["crm_lead_id"] == lead_id)
             and (start is None or r["created_at"] >= start)
             and (end is None or r["created_at"] < end)
         ]
+
+    async def stage_history(self, brand, source_ids, lead_id):
+        self._check()
+        self.calls.append(("stage_history", brand, list(source_ids)))
+        ids = set(source_ids)
+        if not any(r["crm_lead_id"] == lead_id and r["crm_source_id"] in ids
+                   for r in self.leads.get(brand, [])):
+            return []
+        return [dict(h) for h in self.history.get(lead_id, [])]
 
     async def lead_info_rows(self, brand, source_ids, lead_ids=None):
         self._check()
@@ -174,4 +185,5 @@ async def crm(monkeypatch):
     monkeypatch.setattr(reader, "disbursement_rows", fake.disbursement_rows)
     monkeypatch.setattr(reader, "lead_reach_rows", fake.lead_reach_rows)
     monkeypatch.setattr(reader, "lead_info_rows", fake.lead_info_rows)
+    monkeypatch.setattr(reader, "stage_history", fake.stage_history)
     return fake

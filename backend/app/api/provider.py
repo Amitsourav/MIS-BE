@@ -3,6 +3,8 @@ live from the CRM on each request, scoped to the caller's mapped CRM sources —
 which come ONLY from the verified JWT via `require_provider`."""
 from __future__ import annotations
 
+import asyncio
+import uuid
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -15,7 +17,8 @@ from app.deps import Principal, require_provider
 from app.models.enums import Brand, CanonicalStage
 from app.schemas.common import Page
 from app.crm.stage_map import crm_stage_label, crm_stage_order, crm_stage_value
-from app.schemas.lead import CrmStageCount, LeadOut
+from app.crm import reader
+from app.schemas.lead import CrmStageCount, LeadDetailOut, LeadOut, StageEventOut
 from app.schemas.metrics import (
     BrandSplitResponse,
     BrandSplitRow,
@@ -330,6 +333,45 @@ async def leads_export(
          "loan_amount", "application_no"],
         rows,
         "leads.csv",
+    )
+
+
+# Declared after /leads/export so "export" is never read as a lead id.
+@router.get("/leads/{lead_id}", response_model=LeadDetailOut)
+async def lead_detail(
+    lead_id: uuid.UUID,
+    principal: Principal = Depends(require_provider),
+) -> LeadDetailOut:
+    """One lead's page. A lead that isn't the caller's (or doesn't exist)
+    is a plain 404, so ids of other partners' leads reveal nothing."""
+    if principal.brand is None:
+        raise HTTPException(404, "Lead not found")
+    facts = await live.lead_facts(
+        principal.brand, principal.source_ids, None, None, lead_id
+    )
+    if not facts:
+        raise HTTPException(404, "Lead not found")
+    f = facts[0]
+    details, history, payouts = await asyncio.gather(
+        lead_details(principal.brand, principal.source_ids, [lead_id]),
+        reader.stage_history(principal.brand, principal.source_ids, lead_id),
+        P.lead_payout_items(principal.brand, principal.source_ids, lead_id),
+    )
+    return LeadDetailOut(
+        **_lead_out(f, details.get(lead_id)).model_dump(),
+        contacted_at=f.contacted_at,
+        qualified_at=f.qualified_at,
+        converted_at=f.converted_at,
+        stage_history=[
+            StageEventOut(
+                stage=crm_stage_value(h["to_stage"]),
+                label=crm_stage_label(principal.brand, h["to_stage"]),
+                at=h["at"],
+            )
+            for h in history
+            if crm_stage_value(h.get("to_stage")) is not None and h.get("at") is not None
+        ],
+        payouts=payouts,
     )
 
 

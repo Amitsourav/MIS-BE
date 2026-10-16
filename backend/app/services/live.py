@@ -108,8 +108,10 @@ async def lead_facts(
     source_ids: list[uuid.UUID],
     date_from: date | None,
     date_to: date | None,
+    lead_id: uuid.UUID | None = None,
 ) -> list[LeadFact]:
-    """Live facts for the given sources, delivered (created) in the date range."""
+    """Live facts for the given sources, delivered (created) in the date range
+    (only `lead_id`, when given)."""
     start, end = day_bounds(date_from, date_to)
-    rows = await reader.lead_rows(brand, source_ids, start, end)
+    rows = await reader.lead_rows(brand, source_ids, start, end, lead_id)
     return [build_fact(brand, r) for r in rows]

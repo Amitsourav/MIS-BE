@@ -7,7 +7,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict
 
 from app.models.enums import CanonicalStage
-from app.schemas.payout import OptMoney
+from app.schemas.payout import OptMoney, PayoutItem
 
 
 class LeadLenderOut(BaseModel):
@@ -48,6 +48,25 @@ class LeadOut(BaseModel):
     created_at: datetime | None
     counsellor_name: str | None = None  # the FMC counsellor looking after the student
     lenders: list[LeadLenderOut] = []  # empty until the file is logged in with a lender
+
+
+class StageEventOut(BaseModel):
+    """One move of the lead to a CRM stage, from the CRM's stage log."""
+
+    stage: str  # as stored, e.g. "pf_paid"
+    label: str  # the CRM's own name, e.g. "PF Paid"
+    at: datetime
+
+
+class LeadDetailOut(LeadOut):
+    """The lead page: the Leads row plus how it moved through the CRM and
+    the partner's payout on each lender file (FMC only; [] otherwise)."""
+
+    contacted_at: datetime | None = None
+    qualified_at: datetime | None = None
+    converted_at: datetime | None = None
+    stage_history: list[StageEventOut] = []  # oldest first
+    payouts: list[PayoutItem] = []
 
 
 class CrmStageCount(BaseModel):
