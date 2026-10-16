@@ -4,12 +4,16 @@ CSV, logins that stop working at once, un-mapping, unmapped payouts, login
 throttling per account."""
 from __future__ import annotations
 
+import asyncio
+
 import csv
 import io
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
+
+from app.deps import forget_logins
 
 from app.core.security import create_access_token, hash_password
 from app.models import AdminUser, ProviderUser
@@ -128,6 +132,7 @@ async def test_deactivated_login_is_rejected_immediately(client, db, crm):
     user = await _user(db, p)
     user.is_active = False
     await db.commit()
+    forget_logins()  # an edit straight in the DB; the admin API does this itself
     for path in ("/provider/payouts", "/provider/payouts/export", "/me/leads", "/me/overview"):
         assert (await client.get(path, headers=h)).status_code == 401, path
 
@@ -141,12 +146,14 @@ async def test_password_reset_signs_out_old_sessions(client, db, crm):
     user = await _user(db, p)
     user.password_changed_at = datetime.now(timezone.utc) + timedelta(seconds=5)
     await db.commit()
+    forget_logins()  # an edit straight in the DB; the admin API does this itself
     assert (await client.get("/provider/payouts", headers=old_token)).status_code == 401
 
     # a fresh login after the reset works
     user.password_changed_at = datetime.now(timezone.utc) - timedelta(seconds=5)
     user.password_hash = hash_password("new-password-1")
     await db.commit()
+    forget_logins()
     res = await client.post("/auth/login", json={"email": "a8@x.com", "password": "new-password-1"})
     assert res.status_code == 200
     fresh = {"Authorization": f"Bearer {res.json()['access_token']}"}
@@ -161,6 +168,29 @@ async def test_reset_endpoint_stamps_password_change(client, db, crm):
     assert res.status_code == 200
     await db.refresh(await _user(db, p))
     assert (await _user(db, p)).password_changed_at is not None
+
+
+async def test_admin_reset_and_deactivation_apply_on_the_next_click(client, db, crm):
+    """Logins are cached for speed, but an admin change through the API
+    must still sign the partner out at once (the cache is warm here)."""
+    p = await make_provider(db, "A", "a11@x.com")
+    await map_source(db, p)
+    admin = await _admin(db, "f11@x.com", Brand.FMC)
+    old = provider_headers(p)
+    assert (await client.get("/provider/payouts", headers=old)).status_code == 200
+    assert (await client.get("/provider/payouts", headers=old)).status_code == 200  # cached
+    await asyncio.sleep(1.1)  # the reset must be stamped after the token's iat second
+    res = await client.post(f"/admin/providers/{p.id}/users/{p._test_user_id}/reset-password",
+                            headers=admin)
+    assert res.status_code == 200
+    assert (await client.get("/provider/payouts", headers=old)).status_code == 401
+
+    fresh = provider_headers(p)
+    await asyncio.sleep(1.1)
+    assert (await client.get("/provider/payouts", headers=fresh)).status_code == 200
+    res = await client.put(f"/admin/providers/{p.id}", headers=admin, json={"is_active": False})
+    assert res.status_code == 200
+    assert (await client.get("/provider/payouts", headers=fresh)).status_code == 403
 
 
 async def test_token_for_another_providers_login_is_rejected(client, db, crm):

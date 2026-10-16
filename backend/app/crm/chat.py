@@ -20,6 +20,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.core import timing
 from app.models.enums import Brand
 
 logger = logging.getLogger("mis.crm.chat")
@@ -52,11 +53,12 @@ async def _call(
         raise ChatUnavailable("Chat isn't set up for this company yet")
     base, key = api
     try:
-        async with httpx.AsyncClient(timeout=settings.crm_api_timeout_sec) as client:
-            r = await client.request(
-                method, f"{base}{path}", params=params, json=json,
-                headers={"X-API-Key": key},
-            )
+        with timing.span("crm_chat"):
+            async with httpx.AsyncClient(timeout=settings.crm_api_timeout_sec) as client:
+                r = await client.request(
+                    method, f"{base}{path}", params=params, json=json,
+                    headers={"X-API-Key": key},
+                )
     except httpx.HTTPError as exc:
         logger.warning("CRM chat %s %s failed: %s", method, path, exc)
         raise ChatUnavailable("Chat is unavailable right now") from exc

@@ -5,7 +5,10 @@ read-only and live in `app.crm` — they never touch this engine.
 """
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncGenerator
+
+from sqlalchemy import event
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -15,6 +18,7 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
+from app.core import timing
 
 
 class Base(DeclarativeBase):
@@ -25,9 +29,21 @@ class Base(DeclarativeBase):
 # for real server databases like Postgres.
 _engine_kwargs: dict = {"echo": False}
 if not settings.mis_database_url.startswith("sqlite"):
-    _engine_kwargs.update(pool_pre_ping=True, pool_size=10, max_overflow=20)
+    # No pool_pre_ping: it costs a network round trip on every request. Old
+    # connections are recycled instead, before the server would drop them.
+    _engine_kwargs.update(pool_size=10, max_overflow=20, pool_recycle=300)
 
 engine = create_async_engine(settings.mis_database_url, **_engine_kwargs)
+
+@event.listens_for(engine.sync_engine, "before_cursor_execute")
+def _t0(conn, cursor, statement, parameters, context, executemany):
+    conn.info.setdefault("t0", []).append(time.perf_counter())
+
+
+@event.listens_for(engine.sync_engine, "after_cursor_execute")
+def _t1(conn, cursor, statement, parameters, context, executemany):
+    timing.add("misdb", time.perf_counter() - conn.info["t0"].pop())
+
 
 SessionLocal = async_sessionmaker(
     bind=engine,

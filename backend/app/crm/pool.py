@@ -20,6 +20,7 @@ from typing import Any
 import asyncpg
 
 from app.config import settings
+from app.core import timing
 from app.models.enums import Brand
 
 logger = logging.getLogger("mis.crm")
@@ -66,8 +67,31 @@ async def _get_pool(brand: Brand) -> asyncpg.Pool:
         return pool
 
 
+# Identical queries already running, so callers that ask at the same moment
+# (a dashboard fires several requests at once, all reading the same leads)
+# share one CRM round trip. Nothing is kept once the query finishes, so every
+# later request still reads the CRM live.
+_inflight: dict[tuple, asyncio.Future] = {}
+
+
 async def fetch(brand: Brand, sql: str, *args: Any) -> list[asyncpg.Record]:
     """Run one SELECT on a brand's CRM inside a READ ONLY transaction."""
+    with timing.span("crm"):
+        key = (brand, sql, repr(args))
+        running = _inflight.get(key)
+        if running is not None:
+            return await asyncio.shield(running)
+        task = asyncio.ensure_future(_fetch(brand, sql, *args))
+        _inflight[key] = task
+        try:
+            return await asyncio.shield(task)
+        finally:
+            # Only the starter clears it, and only if it's still this run.
+            if _inflight.get(key) is task:
+                del _inflight[key]
+
+
+async def _fetch(brand: Brand, sql: str, *args: Any) -> list[asyncpg.Record]:
     pool = await _get_pool(brand)
     try:
         async with pool.acquire() as conn:

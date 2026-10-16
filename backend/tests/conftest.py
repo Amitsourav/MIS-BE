@@ -167,6 +167,15 @@ class FakeCrm:
 
 
 @pytest_asyncio.fixture(autouse=True)
+async def _fresh_login_cache():
+    from app.deps import forget_logins
+    from app.services.scorecard import forget_targets
+    forget_logins()
+    forget_targets()
+    yield
+
+
+@pytest_asyncio.fixture(autouse=True)
 async def _fresh_login_guard():
     from app.core.ratelimit import login_guard
     login_guard.reset()

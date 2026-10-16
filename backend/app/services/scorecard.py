@@ -13,6 +13,8 @@ Convention for `targets.metric_key`:
 """
 from __future__ import annotations
 
+import time
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,6 +33,27 @@ DEFAULTS: dict[str, tuple[float, float, float, bool]] = {
 DEFAULT_GRADE_BANDS: dict[str, float] = {"A": 85, "B": 70, "C": 55, "D": 40}
 
 
+# The targets table changes only through PUT /admin/targets, and every admin
+# write clears this (see `forget_targets`, called from app/main.py), so it is
+# read from the MIS database once rather than on every dashboard call.
+_TARGETS_TTL_SEC = 300.0
+_targets: tuple[float, list] | None = None
+
+
+def forget_targets() -> None:
+    global _targets
+    _targets = None
+
+
+async def _target_rows(db: AsyncSession) -> list:
+    global _targets
+    if _targets is not None and time.monotonic() - _targets[0] < _TARGETS_TTL_SEC:
+        return _targets[1]
+    rows = (await db.execute(select(Target.brand, Target.metric_key, Target.target_value))).all()
+    _targets = (time.monotonic(), rows)
+    return rows
+
+
 async def load_targets(db: AsyncSession, brand=None) -> dict[str, float]:
     """Flatten the targets table into a metric_key -> value dict.
 
@@ -38,10 +61,9 @@ async def load_targets(db: AsyncSession, brand=None) -> dict[str, float]:
     company's brand-specific rows are layered on top (company overrides global).
     This is what makes each company able to run its own scorecard.
     """
-    rows = await db.execute(select(Target.brand, Target.metric_key, Target.target_value))
     base: dict[str, float] = {}
     override: dict[str, float] = {}
-    for b, k, v in rows.all():
+    for b, k, v in await _target_rows(db):
         if b is None:
             base[k] = float(v)
         elif brand is not None and b == brand:

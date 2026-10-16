@@ -6,15 +6,17 @@ by this value. `require_provider` is the single chokepoint that enforces it.
 """
 from __future__ import annotations
 
+import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import timezone
+from datetime import datetime, timezone
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import timing
 from app.core.security import JWTError, decode_access_token
 from app.database import get_db
 from app.models import AdminUser, Provider, ProviderSource, ProviderUser
@@ -114,37 +116,90 @@ async def require_provider(
     """Resolve and verify the caller is an active provider, and attach the
     provider's source ids. The returned `provider_id` is the ONLY identity any
     provider-facing query may use for scoping."""
+    with timing.span("auth"):
+        return await _require_provider(principal, db)
+
+
+@dataclass(frozen=True)
+class _LoginState:
+    """What `require_provider` needs about one provider login, read in one query."""
+
+    user_active: bool
+    provider_id: uuid.UUID
+    password_changed_at: datetime | None
+    provider_active: bool
+    brand: Brand
+    provider_name: str
+    is_demo: bool
+    source_names: dict[uuid.UUID, str | None]
+
+
+# Every partner request checks its login. The MIS database is a network hop
+# away, so a login's state is remembered briefly: at most _LOGIN_TTL_SEC old,
+# and dropped at once by any admin change (see `forget_logins`, called after
+# every admin write) — so a reset or deactivation still takes effect on the
+# partner's next click. Per process; with several replicas the TTL bounds it.
+_LOGIN_TTL_SEC = 30.0
+_logins: dict[uuid.UUID, tuple[float, _LoginState | None]] = {}
+
+
+def forget_logins() -> None:
+    _logins.clear()
+
+
+async def _login_state(db: AsyncSession, user_id: uuid.UUID) -> _LoginState | None:
+    hit = _logins.get(user_id)
+    if hit is not None and time.monotonic() - hit[0] < _LOGIN_TTL_SEC:
+        return hit[1]
+    rows = (await db.execute(
+        select(
+            ProviderUser.is_active, ProviderUser.provider_id, ProviderUser.password_changed_at,
+            Provider.is_active, Provider.brand, Provider.name, Provider.is_demo,
+            ProviderSource.crm_source_id, ProviderSource.source_name,
+        )
+        .join(Provider, Provider.id == ProviderUser.provider_id)
+        .outerjoin(ProviderSource, and_(
+            ProviderSource.provider_id == Provider.id, ProviderSource.brand == Provider.brand,
+        ))
+        .where(ProviderUser.id == user_id)
+    )).all()
+    state = None
+    if rows:
+        r = rows[0]
+        state = _LoginState(
+            user_active=r[0], provider_id=r[1], password_changed_at=r[2],
+            provider_active=r[3], brand=r[4], provider_name=r[5], is_demo=bool(r[6]),
+            source_names={row[7]: row[8] for row in rows if row[7] is not None},
+        )
+    _logins[user_id] = (time.monotonic(), state)
+    return state
+
+
+async def _require_provider(principal: Principal, db: AsyncSession) -> Principal:
     if principal.role != "provider" or principal.provider_id is None:
         raise _FORBIDDEN
 
     # The login itself must still be valid: not deactivated, still this
     # provider's, and the token not issued before a password reset.
     try:
-        user = await db.get(ProviderUser, uuid.UUID(principal.user_id))
+        user_id = uuid.UUID(principal.user_id)
     except (ValueError, TypeError):
         raise _UNAUTH
-    if user is None or not user.is_active or user.provider_id != principal.provider_id:
+    state = await _login_state(db, user_id)
+    if state is None or not state.user_active or state.provider_id != principal.provider_id:
         raise _UNAUTH
-    if user.password_changed_at is not None:
-        changed = user.password_changed_at
+    if state.password_changed_at is not None:
+        changed = state.password_changed_at
         if changed.tzinfo is None:  # SQLite drops tz; stored values are UTC
             changed = changed.replace(tzinfo=timezone.utc)
         if principal.issued_at is None or principal.issued_at < int(changed.timestamp()):
             raise _UNAUTH
-
-    provider = await db.get(Provider, principal.provider_id)
-    if provider is None or not provider.is_active:
+    if not state.provider_active:
         raise _FORBIDDEN
 
-    principal.brand = provider.brand  # the vendor's single company
-    principal.provider_name = provider.name
-    principal.is_demo = bool(provider.is_demo)
-    rows = await db.execute(
-        select(ProviderSource.crm_source_id, ProviderSource.source_name).where(
-            ProviderSource.provider_id == principal.provider_id,
-            ProviderSource.brand == provider.brand,
-        )
-    )
-    principal.source_names = {sid: name for sid, name in rows.all()}
+    principal.brand = state.brand  # the vendor's single company
+    principal.provider_name = state.provider_name
+    principal.is_demo = state.is_demo
+    principal.source_names = dict(state.source_names)
     principal.source_ids = list(principal.source_names)
     return principal

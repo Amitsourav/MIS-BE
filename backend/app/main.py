@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -14,8 +15,11 @@ from slowapi.middleware import SlowAPIMiddleware
 from app import __version__
 from app.api import admin, auth, provider
 from app.config import settings
+from app.core import timing
 from app.core.ratelimit import limiter
 from app.crm.chat import ChatError, ChatUnavailable
+from app.deps import forget_logins
+from app.services.scorecard import forget_targets
 from app.crm.pool import CrmUnavailable, close_pools
 
 logging.basicConfig(
@@ -72,6 +76,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Server-Timing on every response (outermost, so it covers the whole request).
+@app.middleware("http")
+async def _server_timing(request: Request, call_next):
+    timing.start()
+    t = time.perf_counter()
+    response = await call_next(request)
+    response.headers["Server-Timing"] = timing.header(time.perf_counter() - t)
+    return response
+
+
+# Partner logins and scorecard targets are cached briefly (app/deps.py,
+# app/services/scorecard.py); any admin change — a password reset,
+# deactivation, source mapping, new targets — must apply at once.
+@app.middleware("http")
+async def _forget_caches_on_admin_write(request: Request, call_next):
+    response = await call_next(request)
+    if request.method != "GET" and request.url.path.startswith("/admin/"):
+        forget_logins()
+        forget_targets()
+    return response
+
 
 # Routers
 app.include_router(auth.router)
