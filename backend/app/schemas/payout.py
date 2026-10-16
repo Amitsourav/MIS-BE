@@ -40,6 +40,13 @@ class PayoutSummary(BaseModel):
     invoice_not_raised: Money = Decimal("0")  # pending, partner hasn't invoiced it yet
     invoice_raised: Money = Decimal("0")  # pending on an open invoice, not yet due
     invoice_overdue: Money = Decimal("0")  # pending on an open invoice past its due date
+    # With GST on top (the CRM's amounts above are before GST). balance_with_gst
+    # is signed like balance. gst_rate is a percent, e.g. "18.00".
+    gst_rate: Money = Decimal("0")
+    earned_gst: Money = Decimal("0")  # the GST on earned
+    earned_with_gst: Money = Decimal("0")
+    pending_with_gst: Money = Decimal("0")
+    balance_with_gst: Money = Decimal("0")
 
 
 class PayoutItem(BaseModel):
@@ -68,6 +75,13 @@ class PayoutItem(BaseModel):
     invoice_due_date: date | None = None
     invoice_status: str | None = None  # 'raised' | 'paid' | 'cancelled'
     invoice_state: str = "not_raised"  # bucket of this row's pending: not_raised | raised | overdue
+    # With GST on top (the CRM's amounts above are before GST). balance_with_gst
+    # is signed like balance. gst_rate is a percent, e.g. "18.00".
+    gst_rate: Money = Decimal("0")
+    earned_gst: Money = Decimal("0")  # the GST on earned
+    earned_with_gst: Money = Decimal("0")
+    pending_with_gst: Money = Decimal("0")
+    balance_with_gst: Money = Decimal("0")
 
 
 class PayoutsResponse(BaseModel):

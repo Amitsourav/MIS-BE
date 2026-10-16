@@ -60,6 +60,17 @@ async def test_av_provider_is_unsupported_not_an_error(client, db, crm):
     assert export.text.strip().count("\n") == 0  # header only
 
 
+async def test_overpaid_balance_with_gst_stays_negative(client, db, crm):
+    a = await make_provider(db, "A", "gst@x.com")
+    src = await map_source(db, a)
+    crm.payouts = [payout_row(src, earned="1000.00", paid="1500.00")]
+    body = (await client.get("/provider/payouts", headers=provider_headers(a))).json()
+    item, s = body["items"][0], body["summary"]
+    assert (item["balance"], item["balance_with_gst"]) == ("-500.00", "-590.00")
+    assert (item["pending_with_gst"], item["earned_with_gst"]) == ("0.00", "1180.00")
+    assert (s["balance_with_gst"], s["earned_gst"]) == ("-590.00", "180.00")
+
+
 async def test_summary_covers_whole_filtered_set_not_the_page(client, db, crm):
     a = await make_provider(db, "A", "pa4@x.com")
     src = await map_source(db, a)
@@ -93,6 +104,12 @@ async def test_summary_covers_whole_filtered_set_not_the_page(client, db, crm):
         "invoice_not_raised": "4000.25",
         "invoice_raised": "0.00",
         "invoice_overdue": "0.00",
+        # 18% GST on top of earned / pending / balance
+        "gst_rate": "18.00",
+        "earned_gst": "1890.09",
+        "earned_with_gst": "12390.59",
+        "pending_with_gst": "4720.30",
+        "balance_with_gst": "4720.30",
     }
     assert body["items"][0]["pf_paid_on"] == "2026-09-20"  # newest PF-paid first
 
@@ -146,7 +163,9 @@ async def test_money_serialises_as_strings(client, db, crm):
         "overpaid", "balance", "first_disbursed_on", "last_disbursed_on",
         "tds", "net_paid", "paid_on", "invoice_number", "invoice_amount", "invoice_date",
         "invoice_due_date", "invoice_status", "invoice_state",
+        "gst_rate", "earned_gst", "earned_with_gst", "pending_with_gst", "balance_with_gst",
     }
+    assert (rate_row["earned_gst"], rate_row["earned_with_gst"]) == ("1944.00", "12744.00")
 
     agreed = by_basis["agreed"]
     assert agreed["payout_rate"] is None
@@ -168,7 +187,8 @@ async def test_export_returns_all_filtered_rows(client, db, crm):
     assert lines[0] == ("lead_no,full_name,bank_name,loan_amount,pf_paid_on,"
                         "disbursed_total,payout_basis,payout_rate,earned,paid,pending,overpaid,"
                         "balance,first_disbursed_on,last_disbursed_on,tds,net_paid,paid_on,"
-                        "invoice_number,invoice_amount,invoice_date,invoice_due_date,invoice_status")
+                        "invoice_number,invoice_amount,invoice_date,invoice_due_date,invoice_status,"
+                        "earned_with_gst,pending_with_gst,balance_with_gst")
     assert len(lines) == 4
     assert "10800.00" in lines[1]
 

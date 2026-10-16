@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
+from app.config import settings
 from app.crm import reader
 from app.crm.lenders import lender_display
 from app.models.enums import Brand
@@ -61,6 +62,20 @@ def _rate(value: Any) -> Decimal | None:
     return d.quantize(_CENT) if d.as_tuple().exponent > -2 else d
 
 
+def _gst(earned: Decimal, pending: Decimal, balance: Decimal) -> dict[str, Decimal]:
+    """The GST fields from exact (unrounded) amounts, each rounded once."""
+    rate = settings.payout_gst_rate
+    k = 1 + rate / 100
+    q = lambda d: d.quantize(_CENT, rounding=ROUND_HALF_UP)  # noqa: E731
+    return dict(
+        gst_rate=q(rate),
+        earned_gst=q(earned * rate / 100),
+        earned_with_gst=q(earned * k),
+        pending_with_gst=q(pending * k),
+        balance_with_gst=q(balance * k),
+    )
+
+
 def _overpaid(r: dict[str, Any]) -> Decimal:
     return max(_exact(r.get("payout_paid")) - _exact(r.get("payout_earned")), Decimal("0"))
 
@@ -100,6 +115,8 @@ def _summary(rows: list[dict[str, Any]]) -> PayoutSummary:
 
     paid, tds, pending_total = total("payout_paid"), total("payout_tds"), total("payout_pending")
     overpaid = sum((_overpaid(r) for r in rows), Decimal("0")).quantize(_CENT, rounding=ROUND_HALF_UP)
+    exact = lambda key: sum((_exact(r.get(key)) for r in rows), Decimal("0"))  # noqa: E731
+    exact_overpaid = sum((_overpaid(r) for r in rows), Decimal("0"))
 
     return PayoutSummary(
         students=len({r["lead_id"] for r in rows}),
@@ -116,6 +133,8 @@ def _summary(rows: list[dict[str, Any]]) -> PayoutSummary:
         invoice_not_raised=pending_total - raised - overdue,
         invoice_raised=raised,
         invoice_overdue=overdue,
+        **_gst(exact("payout_earned"), exact("payout_pending"),
+               exact("payout_pending") - exact_overpaid),
     )
 
 
@@ -153,6 +172,8 @@ def _item_fields(r: dict[str, Any]) -> dict[str, Any]:
         invoice_due_date=r.get("partner_invoice_due_date"),
         invoice_status=r.get("partner_invoice_status"),
         invoice_state=_invoice_state(r, _today()),
+        **_gst(_exact(r.get("payout_earned")), _exact(r.get("payout_pending")),
+               _exact(r.get("payout_pending")) - _overpaid(r)),
     )
 
 

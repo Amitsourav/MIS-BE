@@ -238,13 +238,13 @@ async def leads(
     page_size: int = Query(50, ge=1, le=200),
     principal: Principal = Depends(require_provider),
 ) -> Page[LeadOut]:
-    facts = await _filtered_leads(
-        principal, brand, stage, date_from, date_to, q, all_time, crm_stage
+    # The leads and their details come from two CRM queries; run them at
+    # once (details for all the caller's leads, then pick this page's).
+    facts, details = await asyncio.gather(
+        _filtered_leads(principal, brand, stage, date_from, date_to, q, all_time, crm_stage),
+        lead_details(principal.brand, principal.source_ids),
     )
     window = facts[(page - 1) * page_size : page * page_size]
-    details = await lead_details(
-        principal.brand, principal.source_ids, [f.crm_lead_id for f in window]
-    )
     return Page(
         items=[_lead_out(f, details.get(f.crm_lead_id)) for f in window],
         total=len(facts),
@@ -350,17 +350,17 @@ async def lead_detail(
     is a plain 404, so ids of other partners' leads reveal nothing."""
     if principal.brand is None:
         raise HTTPException(404, "Lead not found")
-    facts = await live.lead_facts(
-        principal.brand, principal.source_ids, None, None, lead_id
-    )
-    if not facts:
-        raise HTTPException(404, "Lead not found")
-    f = facts[0]
-    details, history, payouts = await asyncio.gather(
+    # All four are scoped to the caller's sources, so they can run at once;
+    # the lead row alone decides 404.
+    facts, details, history, payouts = await asyncio.gather(
+        live.lead_facts(principal.brand, principal.source_ids, None, None, lead_id),
         lead_details(principal.brand, principal.source_ids, [lead_id]),
         reader.stage_history(principal.brand, principal.source_ids, lead_id),
         P.lead_payout_items(principal.brand, principal.source_ids, lead_id),
     )
+    if not facts:
+        raise HTTPException(404, "Lead not found")
+    f = facts[0]
     return LeadDetailOut(
         **_lead_out(f, details.get(lead_id)).model_dump(),
         contacted_at=f.contacted_at,
@@ -548,6 +548,9 @@ async def payouts_export(
                 row["invoice_date"] or "",
                 row["invoice_due_date"] or "",
                 row["invoice_status"] or "",
+                row["earned_with_gst"],
+                row["pending_with_gst"],
+                row["balance_with_gst"],
             ]
         )
     return csv_response(
@@ -555,7 +558,8 @@ async def payouts_export(
          "disbursed_total", "payout_basis", "payout_rate", "earned", "paid",
          "pending", "overpaid", "balance", "first_disbursed_on", "last_disbursed_on",
          "tds", "net_paid", "paid_on", "invoice_number", "invoice_amount", "invoice_date",
-         "invoice_due_date", "invoice_status"],
+         "invoice_due_date", "invoice_status", "earned_with_gst", "pending_with_gst",
+         "balance_with_gst"],
         rows,
         "payouts.csv",
     )

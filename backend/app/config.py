@@ -5,6 +5,7 @@ hard-coded into business logic, per the project's non-negotiables.
 """
 from __future__ import annotations
 
+from decimal import Decimal
 from functools import lru_cache
 
 from pydantic import Field
@@ -46,6 +47,11 @@ class Settings(BaseSettings):
     av_crm_api_url: str | None = None
     av_crm_api_key: str | None = None
     crm_api_timeout_sec: float = 10.0
+
+    # --- Partner payouts ---
+    # GST the partner adds on top of what they earn (percent). The CRM's
+    # amounts are before GST; the MIS shows earned / pending / balance with it.
+    payout_gst_rate: Decimal = Decimal("18")
 
     # --- CORS ---
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
