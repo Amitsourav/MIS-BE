@@ -63,6 +63,15 @@ async def test_eligible_lists_students_with_their_own_lead_numbers(client, db, c
     assert invoices.calls[-1] == ("eligible", Brand.FMC, False, [src])
 
 
+async def test_raise_invoice_without_gst_sends_rate_zero(client, db, crm, invoices):
+    p, src, rows = await _setup(db, crm, invoices)
+    data = {**_form(rows), "with_gst": "false"}
+    r = await client.post("/provider/invoices", headers=provider_headers(p), data=data,
+                          files={"pdf": ("mine.pdf", PDF, "application/pdf")})
+    assert r.status_code == 201, r.text
+    assert invoices.raised[-1]["gst_rate"] == Decimal("0")
+
+
 async def test_raise_invoice_sends_scope_gst_and_pdf(client, db, crm, invoices):
     p, src, rows = await _setup(db, crm, invoices)
     cid = uuid.uuid4()

@@ -48,6 +48,7 @@ class PayoutSummary(BaseModel):
     earned_with_gst: Money = Decimal("0")
     pending_with_gst: Money = Decimal("0")
     balance_with_gst: Money = Decimal("0")
+    paid_with_gst: Money = Decimal("0")  # paid + GST (the CRM's paid is before GST)
     # The partner's payout rate, a percent, over the 'rate' rows (agreed
     # amounts have none). One rate for all -> that rate exactly; several ->
     # their average weighted by released money (earned / released), and
@@ -90,6 +91,7 @@ class PayoutItem(BaseModel):
     earned_with_gst: Money = Decimal("0")
     pending_with_gst: Money = Decimal("0")
     balance_with_gst: Money = Decimal("0")
+    paid_with_gst: Money = Decimal("0")  # paid + GST (the CRM's paid is before GST)
 
 
 class PayoutsResponse(BaseModel):

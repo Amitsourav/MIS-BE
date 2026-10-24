@@ -127,6 +127,7 @@ async def test_summary_covers_whole_filtered_set_not_the_page(client, db, crm):
         "earned_with_gst": "12390.59",
         "pending_with_gst": "4720.30",
         "balance_with_gst": "4720.30",
+        "paid_with_gst": "7670.30",
         "payout_rate": "0.60",
         "payout_rate_varies": False,
     }
@@ -184,7 +185,7 @@ async def test_money_serialises_as_strings(client, db, crm):
         "overpaid", "balance", "first_disbursed_on", "last_disbursed_on",
         "tds", "net_paid", "paid_on", "invoice_number", "invoice_amount", "invoice_date",
         "invoice_due_date", "invoice_status", "invoice_state",
-        "gst_rate", "earned_gst", "earned_with_gst", "pending_with_gst", "balance_with_gst",
+        "gst_rate", "earned_gst", "earned_with_gst", "pending_with_gst", "balance_with_gst", "paid_with_gst",
     }
     assert (rate_row["earned_gst"], rate_row["earned_with_gst"]) == ("1944.00", "12744.00")
 
@@ -209,7 +210,7 @@ async def test_export_returns_all_filtered_rows(client, db, crm):
                         "disbursed_total,payout_basis,payout_rate,earned,paid,pending,overpaid,"
                         "balance,first_disbursed_on,last_disbursed_on,tds,net_paid,paid_on,"
                         "invoice_number,invoice_amount,invoice_date,invoice_due_date,invoice_status,"
-                        "earned_with_gst,pending_with_gst,balance_with_gst")
+                        "earned_with_gst,pending_with_gst,balance_with_gst,paid_with_gst")
     assert len(lines) == 4
     assert "10800.00" in lines[1]
 

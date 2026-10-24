@@ -62,7 +62,7 @@ def _rate(value: Any) -> Decimal | None:
     return d.quantize(_CENT) if d.as_tuple().exponent > -2 else d
 
 
-def _gst(earned: Decimal, pending: Decimal, balance: Decimal) -> dict[str, Decimal]:
+def _gst(earned: Decimal, pending: Decimal, balance: Decimal, paid: Decimal) -> dict[str, Decimal]:
     """The GST fields from exact (unrounded) amounts, each rounded once."""
     rate = settings.payout_gst_rate
     k = 1 + rate / 100
@@ -73,12 +73,13 @@ def _gst(earned: Decimal, pending: Decimal, balance: Decimal) -> dict[str, Decim
         earned_with_gst=q(earned * k),
         pending_with_gst=q(pending * k),
         balance_with_gst=q(balance * k),
+        paid_with_gst=q(paid * k),
     )
 
 
 def _row_gst(r: dict[str, Any]) -> dict[str, Decimal]:
     return _gst(_exact(r.get("payout_earned")), _exact(r.get("payout_pending")),
-                _exact(r.get("payout_pending")) - _overpaid(r))
+                _exact(r.get("payout_pending")) - _overpaid(r), _exact(r.get("payout_paid")))
 
 
 def _overpaid(r: dict[str, Any]) -> Decimal:
@@ -122,7 +123,7 @@ def _summary(rows: list[dict[str, Any]]) -> PayoutSummary:
     overpaid = sum((_overpaid(r) for r in rows), Decimal("0")).quantize(_CENT, rounding=ROUND_HALF_UP)
     # GST totals are the sum of each row's rounded GST figures, so a partner
     # adding up the CSV's GST columns gets exactly the page's total.
-    gst = {"gst_rate": _gst(Decimal("0"), Decimal("0"), Decimal("0"))["gst_rate"]}
+    gst = {"gst_rate": _gst(*[Decimal("0")] * 4)["gst_rate"]}
     for r in rows:
         for key, value in _row_gst(r).items():
             if key != "gst_rate":

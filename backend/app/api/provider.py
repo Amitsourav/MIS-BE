@@ -7,6 +7,7 @@ import asyncio
 import uuid
 from zoneinfo import ZoneInfo
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 
 import json
 
@@ -557,6 +558,7 @@ async def payouts_export(
                 row["earned_with_gst"],
                 row["pending_with_gst"],
                 row["balance_with_gst"],
+                row["paid_with_gst"],
             ]
         )
     return csv_response(
@@ -565,7 +567,7 @@ async def payouts_export(
          "pending", "overpaid", "balance", "first_disbursed_on", "last_disbursed_on",
          "tds", "net_paid", "paid_on", "invoice_number", "invoice_amount", "invoice_date",
          "invoice_due_date", "invoice_status", "earned_with_gst", "pending_with_gst",
-         "balance_with_gst"],
+         "balance_with_gst", "paid_with_gst"],
         rows,
         "payouts.csv",
     )
@@ -633,12 +635,14 @@ async def invoice_raise(
     invoice_date: date = Form(...),
     lines: str = Form(..., description='JSON: [{"lead_bank_id": "...", "amount": "1234.00"}]; no amount = all that is left'),
     client_invoice_id: uuid.UUID | None = Form(None, description="Send the same id when retrying"),
+    with_gst: bool = Form(True, description="false = the partner bills without GST (rate 0)"),
     pdf: UploadFile | None = File(None),
     principal: Principal = Depends(require_provider),
     db: AsyncSession = Depends(get_db),
 ) -> InvoiceOut:
     """Raise an invoice to FMC for the chosen students, with its PDF. It is
-    stored in the CRM as `raised`, payouts + GST at the current rate."""
+    stored in the CRM as `raised`, payouts + GST at the current rate, or
+    without GST when the partner chooses (`with_gst=false`)."""
     brand = _invoice_brand(principal)
     number = invoice_number.strip()
     if not number:
@@ -684,7 +688,7 @@ async def invoice_raise(
             invoice_id=client_invoice_id or uuid.uuid4(),
             invoice_number=number,
             invoice_date=invoice_date,
-            gst_rate=settings.payout_gst_rate,
+            gst_rate=settings.payout_gst_rate if with_gst else Decimal("0"),
             partner_name=principal.provider_name or "Partner",
             partner_user_email=user.email if user else None,
             lines=[l.model_dump() for l in picked],
