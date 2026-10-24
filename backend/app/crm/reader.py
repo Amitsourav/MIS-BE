@@ -118,7 +118,9 @@ async def lead_rows(
         brand,
         _lead_sql(brand),
         list(source_ids),
-        raw_stages_for(brand, CanonicalStage.CONTACTED),
+        # Reaching a "connected" stage (FMC: opportunity) means it was
+        # contacted too, even if it has since been lost.
+        raw_stages_for(brand, CanonicalStage.CONTACTED) + raw_stages_for(brand, CanonicalStage.CONNECTED),
         raw_stages_for(brand, CanonicalStage.QUALIFIED),
         raw_stages_for(brand, CanonicalStage.CONVERTED),
         raw_stages_for(brand, CanonicalStage.LOST),

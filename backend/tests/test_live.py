@@ -276,3 +276,13 @@ async def test_all_time_with_no_leads_is_empty_not_an_error(client, db, crm):
     assert res.status_code == 200
     body = res.json()
     assert body["funnel"]["delivered"] == 0 and body["date_from"] == body["date_to"]
+
+
+async def test_fmc_opportunity_counts_as_contacted_not_qualified(client, db, crm):
+    # "Spoke, interested, but later": reached, so contacted and connected.
+    p, _ = await _setup(db, crm, lambda s: [
+        lead_row(s, phone="9000000001", raw_stage="opportunity"),
+        lead_row(s, phone="9000000002", raw_stage="created"),
+    ])
+    f = (await client.get(f"/me/overview?{RANGE}", headers=provider_headers(p))).json()["funnel"]
+    assert (f["delivered"], f["contacted"], f["connected"], f["qualified"]) == (2, 1, 1, 0)

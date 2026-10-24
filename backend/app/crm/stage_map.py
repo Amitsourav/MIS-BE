@@ -22,7 +22,10 @@ _FMC_MAP: dict[str, CanonicalStage] = {
     "sanctioned": CanonicalStage.IN_PROCESS,
     "pf_paid": CanonicalStage.IN_PROCESS,
     "disbursed": CanonicalStage.CONVERTED,
-    "opportunity": CanonicalStage.OPPORTUNITY,
+    # "Spoke, interested, but later" (the AI-call outcome table in BE-CRM
+    # CLAUDE.md): the student was reached, so contacted + connected, but not
+    # qualified. (As a side state it counted as never contacted.)
+    "opportunity": CanonicalStage.CONNECTED,
     "dnp": CanonicalStage.DNP,
     "lost": CanonicalStage.LOST,
 }
