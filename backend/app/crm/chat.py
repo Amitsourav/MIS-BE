@@ -47,31 +47,40 @@ _PASS_THROUGH = {404, 422, 429}
 async def _call(
     brand: Brand, demo: bool, method: str, path: str, *,
     params: dict[str, Any] | None = None, json: dict[str, Any] | None = None,
+    data: dict[str, Any] | None = None, files: dict[str, Any] | None = None,
+    what: str = "Chat", span: str = "crm_chat",
+    error: type[ChatError] | None = None, pass_through: frozenset[int] | set[int] = _PASS_THROUGH,
+    raw: bool = False,
 ) -> Any:
+    """One call to the CRM's /mis/* API with this company's `mis` key.
+    Shared by chat and partner invoices (app/crm/invoices.py), which pass
+    their own `what` (for messages), error class and pass-through codes.
+    `raw` returns the body bytes instead of JSON."""
+    error = error or ChatError
     api = settings.crm_api(brand.value, demo)
     if api is None:
-        raise ChatUnavailable("Chat isn't set up for this company yet")
+        raise ChatUnavailable(f"{what} isn't set up for this company yet")
     base, key = api
     try:
-        with timing.span("crm_chat"):
+        with timing.span(span):
             async with httpx.AsyncClient(timeout=settings.crm_api_timeout_sec) as client:
                 r = await client.request(
-                    method, f"{base}{path}", params=params, json=json,
+                    method, f"{base}{path}", params=params, json=json, data=data, files=files,
                     headers={"X-API-Key": key},
                 )
     except httpx.HTTPError as exc:
-        logger.warning("CRM chat %s %s failed: %s", method, path, exc)
-        raise ChatUnavailable("Chat is unavailable right now") from exc
+        logger.warning("CRM %s %s failed: %s", method, path, exc)
+        raise ChatUnavailable(f"{what} is unavailable right now") from exc
     if r.status_code in (200, 201):
-        return r.json()
-    if r.status_code in _PASS_THROUGH:
+        return r.content if raw else r.json()
+    if r.status_code in pass_through:
         try:
             detail = r.json().get("detail")
         except ValueError:
             detail = None
-        raise ChatError(r.status_code, detail or "Chat request refused")
-    logger.warning("CRM chat %s %s -> %s: %s", method, path, r.status_code, r.text[:300])
-    raise ChatUnavailable("Chat is unavailable right now")
+        raise error(r.status_code, detail or "Request refused")
+    logger.warning("CRM %s %s -> %s: %s", method, path, r.status_code, r.text[:300])
+    raise ChatUnavailable(f"{what} is unavailable right now")
 
 
 def _ids(source_ids: list[uuid.UUID]) -> str:

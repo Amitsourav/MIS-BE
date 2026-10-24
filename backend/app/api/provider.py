@@ -5,10 +5,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from zoneinfo import ZoneInfo
 from datetime import date, datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+import json
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import Response, StreamingResponse
+from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,8 +23,10 @@ from app.deps import Principal, require_provider
 from app.models.enums import Brand, CanonicalStage
 from app.schemas.common import Page
 from app.crm.stage_map import crm_stage_label, crm_stage_order, crm_stage_value
-from app.crm import chat, reader
+from app.config import settings
+from app.crm import chat, invoices, reader
 from app.models import LeadChatRead, ProviderUser
+from app.schemas.invoice import EligibleStudentOut, InvoiceEligibleOut, InvoiceLineIn, InvoiceOut
 from app.schemas.chat import ChatLatestOut, ChatMessageOut, ChatPostIn, ChatThreadOut
 from app.schemas.lead import CrmStageCount, LeadDetailOut, LeadOut, StageEventOut
 from app.schemas.metrics import (
@@ -562,4 +568,144 @@ async def payouts_export(
          "balance_with_gst"],
         rows,
         "payouts.csv",
+    )
+
+
+# --- partner invoices (stored in the CRM; app/crm/invoices.py) ---
+# A partner bills FMC for their payouts: pick students, enter their own
+# invoice number and date, attach the PDF. FMC only (Admitverse has no payouts).
+# 4 MB, not the CRM's 5: the portal is on Vercel, which refuses request
+# bodies over 4.5 MB before they reach us.
+_PDF_MAX_BYTES = 4 * 1024 * 1024
+_IST = ZoneInfo("Asia/Kolkata")
+_NOT_FMC = "Payouts are tracked for FundMyCampus loans"
+
+
+def _invoice_brand(principal: Principal) -> Brand:
+    if principal.brand != Brand.FMC:
+        raise HTTPException(404, _NOT_FMC)
+    return principal.brand
+
+
+def _invoice_out(row: dict, numbers: dict[uuid.UUID, int]) -> InvoiceOut:
+    out = InvoiceOut.model_validate(row)
+    for line in out.lines:
+        line.lead_no = numbers.get(line.lead_id) if line.lead_id else None
+    return out
+
+
+@payouts_router.get("/invoices/eligible", response_model=InvoiceEligibleOut)
+async def invoice_eligible(
+    principal: Principal = Depends(require_provider),
+) -> InvoiceEligibleOut:
+    """Students whose payout can still be invoiced, with what's left on each
+    (before GST), and the GST rate the invoice will carry."""
+    gst = settings.payout_gst_rate
+    if principal.brand != Brand.FMC:
+        return InvoiceEligibleOut(gst_rate=gst, items=[])
+    rows, numbers = await asyncio.gather(
+        invoices.eligible(principal.brand, principal.is_demo, principal.source_ids),
+        reader.lead_numbers(principal.brand, principal.source_ids),
+    )
+    items = [EligibleStudentOut.model_validate(r) for r in rows]
+    for it in items:
+        it.lead_no = numbers.get(it.lead_id)
+    return InvoiceEligibleOut(gst_rate=gst, items=items)
+
+
+@payouts_router.get("/invoices", response_model=list[InvoiceOut])
+async def invoice_list(
+    principal: Principal = Depends(require_provider),
+) -> list[InvoiceOut]:
+    """The partner's invoices, newest first: raised here or entered by FMC."""
+    if principal.brand != Brand.FMC:
+        return []
+    rows, numbers = await asyncio.gather(
+        invoices.list_invoices(principal.brand, principal.is_demo, principal.source_ids),
+        reader.lead_numbers(principal.brand, principal.source_ids),
+    )
+    return [_invoice_out(r, numbers) for r in rows]
+
+
+@payouts_router.post("/invoices", response_model=InvoiceOut, status_code=201)
+async def invoice_raise(
+    invoice_number: str = Form(""),
+    invoice_date: date = Form(...),
+    lines: str = Form(..., description='JSON: [{"lead_bank_id": "...", "amount": "1234.00"}]; no amount = all that is left'),
+    client_invoice_id: uuid.UUID | None = Form(None, description="Send the same id when retrying"),
+    pdf: UploadFile | None = File(None),
+    principal: Principal = Depends(require_provider),
+    db: AsyncSession = Depends(get_db),
+) -> InvoiceOut:
+    """Raise an invoice to FMC for the chosen students, with its PDF. It is
+    stored in the CRM as `raised`, payouts + GST at the current rate."""
+    brand = _invoice_brand(principal)
+    number = invoice_number.strip()
+    if not number:
+        raise HTTPException(422, "Enter your invoice number.")
+    if len(number) > 60:
+        raise HTTPException(422, "The invoice number can be at most 60 characters.")
+    if invoice_date > datetime.now(_IST).date():
+        raise HTTPException(422, "The invoice date can't be in the future.")
+    try:
+        picked = TypeAdapter(list[InvoiceLineIn]).validate_python(json.loads(lines))
+    except (ValueError, ValidationError):
+        raise HTTPException(422, "The chosen students couldn't be read. Reload and try again.")
+    if not picked:
+        raise HTTPException(422, "Pick at least one student.")
+    if len({l.lead_bank_id for l in picked}) != len(picked):
+        raise HTTPException(422, "The same student is on this invoice twice.")
+    if pdf is None:
+        raise HTTPException(422, "Attach your invoice as a PDF.")
+    content = await pdf.read(_PDF_MAX_BYTES + 1)
+    if len(content) > _PDF_MAX_BYTES:
+        raise HTTPException(422, "The PDF is larger than 4 MB.")
+    if not content.startswith(b"%PDF"):
+        raise HTTPException(422, "The attachment must be a PDF file.")
+
+    # The CRM takes one source per invoice. With several, find the students' one.
+    if len(principal.source_ids) == 1:
+        source_id = principal.source_ids[0]
+    else:
+        owner = {uuid.UUID(str(r["lead_bank_id"])): uuid.UUID(str(r["lead_source_id"]))
+                 for r in await invoices.eligible(brand, principal.is_demo, principal.source_ids)}
+        sources = {owner.get(l.lead_bank_id) for l in picked}
+        if None in sources:
+            raise HTTPException(422, "One of these students has nothing left to invoice. Reload and try again.")
+        if len(sources) > 1:
+            raise HTTPException(422, "These students are under different FundMyCampus accounts of yours. Raise a separate invoice for each.")
+        source_id = sources.pop()
+
+    user = await db.get(ProviderUser, uuid.UUID(principal.user_id))
+    row, numbers = await asyncio.gather(
+        invoices.raise_invoice(
+            brand, principal.is_demo, principal.source_ids,
+            lead_source_id=source_id,
+            invoice_id=client_invoice_id or uuid.uuid4(),
+            invoice_number=number,
+            invoice_date=invoice_date,
+            gst_rate=settings.payout_gst_rate,
+            partner_name=principal.provider_name or "Partner",
+            partner_user_email=user.email if user else None,
+            lines=[l.model_dump() for l in picked],
+            pdf=content,
+        ),
+        reader.lead_numbers(brand, principal.source_ids),
+    )
+    return _invoice_out(row, numbers)
+
+
+@payouts_router.get("/invoices/{invoice_id}/pdf")
+async def invoice_pdf(
+    invoice_id: uuid.UUID,
+    principal: Principal = Depends(require_provider),
+) -> Response:
+    """The invoice's PDF. 404 when it isn't the caller's or has no PDF."""
+    content = await invoices.pdf(
+        _invoice_brand(principal), principal.is_demo, principal.source_ids, invoice_id
+    )
+    return Response(
+        content, media_type="application/pdf",
+        headers={"Cache-Control": "no-store",
+                 "Content-Disposition": f'attachment; filename="invoice-{invoice_id}.pdf"'},
     )

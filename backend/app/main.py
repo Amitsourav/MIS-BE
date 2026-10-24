@@ -18,6 +18,7 @@ from app.config import settings
 from app.core import timing
 from app.core.ratelimit import limiter
 from app.crm.chat import ChatError, ChatUnavailable
+from app.crm.invoices import InvoiceError
 from app.deps import forget_logins
 from app.services.scorecard import forget_targets
 from app.crm.pool import CrmUnavailable, close_pools
@@ -66,6 +67,13 @@ async def _chat_unavailable(_: Request, exc: ChatUnavailable) -> JSONResponse:
 async def _chat_error(_: Request, exc: ChatError) -> JSONResponse:
     detail = "Lead not found" if exc.status == 404 else exc.detail
     return JSONResponse(status_code=exc.status, content={"detail": detail})
+
+
+# The CRM's 404 / 409 / 422 / 429 on an invoice call: its detail is written
+# for the partner, so it passes through as-is.
+@app.exception_handler(InvoiceError)
+async def _invoice_error(_: Request, exc: InvoiceError) -> JSONResponse:
+    return JSONResponse(status_code=exc.status, content={"detail": exc.detail})
 
 
 # CORS

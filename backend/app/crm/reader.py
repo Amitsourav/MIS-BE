@@ -166,6 +166,32 @@ def _lead_no_join(lead_col: str) -> str:
     ) ln ON ln.id = {lead_col}"""
 
 
+def _lead_no_sql(brand: Brand) -> str:
+    s = CRM_SCHEMAS[brand]
+    return f"""
+        SELECT n.id AS crm_lead_id, n.lead_no FROM (
+            SELECT x.{s.lead_id} AS id,
+                   row_number() OVER (ORDER BY x.{s.lead_created}, x.{s.lead_id}) AS lead_no
+            FROM {s.leads_table} x
+            WHERE NOT x.{s.lead_deleted} AND x.{s.lead_source_fk} = ANY($1::uuid[])
+        ) n
+        WHERE ($2::uuid[] IS NULL OR n.id = ANY($2::uuid[]))
+    """
+
+
+async def lead_numbers(
+    brand: Brand, source_ids: list[uuid.UUID], lead_ids: list[uuid.UUID] | None = None
+) -> dict[uuid.UUID, int]:
+    """The partner's own lead number (1, 2, 3...) of each of `lead_ids` (None =
+    all their leads), numbered exactly as in `_lead_sql`. Leads outside
+    `source_ids` are absent."""
+    if not source_ids or lead_ids == []:
+        return {}
+    ids = None if lead_ids is None else list(set(lead_ids))
+    rows = await pool.fetch(brand, _lead_no_sql(brand), list(source_ids), ids)
+    return {r["crm_lead_id"]: r["lead_no"] for r in rows}
+
+
 _PAYOUT_SQL = """
     SELECT
         p.lead_bank_id, p.lead_id, p.lead_source_id, p.bank_name, p.loan_amount,
