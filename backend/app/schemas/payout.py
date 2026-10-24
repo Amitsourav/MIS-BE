@@ -48,6 +48,12 @@ class PayoutSummary(BaseModel):
     earned_with_gst: Money = Decimal("0")
     pending_with_gst: Money = Decimal("0")
     balance_with_gst: Money = Decimal("0")
+    # The partner's payout rate, a percent, over the 'rate' rows (agreed
+    # amounts have none). One rate for all -> that rate exactly; several ->
+    # their average weighted by released money (earned / released), and
+    # payout_rate_varies is true. None when no row is on a rate.
+    payout_rate: OptRate = None
+    payout_rate_varies: bool = False
 
 
 class PayoutItem(BaseModel):

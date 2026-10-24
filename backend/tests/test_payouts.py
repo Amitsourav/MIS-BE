@@ -127,6 +127,8 @@ async def test_summary_covers_whole_filtered_set_not_the_page(client, db, crm):
         "earned_with_gst": "12390.59",
         "pending_with_gst": "4720.30",
         "balance_with_gst": "4720.30",
+        "payout_rate": "0.60",
+        "payout_rate_varies": False,
     }
     assert body["items"][0]["pf_paid_on"] == "2026-09-20"  # newest PF-paid first
 
@@ -282,3 +284,33 @@ async def test_row_with_no_release_yet_shows_all_time_but_not_in_a_date_range(cl
     ranged = (await client.get("/provider/payouts?date_from=2026-01-01&date_to=2026-12-31",
                                headers=h)).json()
     assert ranged["total"] == 1
+
+
+async def test_summary_payout_rate_one_mixed_or_none(client, db, crm):
+    a = await make_provider(db, "A", "rate1@x.com")
+    src = await map_source(db, a)
+
+    async def summary():
+        return (await client.get("/provider/payouts", headers=provider_headers(a))).json()["summary"]
+
+    # One rate for every student: that rate, exactly as stored.
+    crm.payouts = [
+        payout_row(src, rate="0.60", disbursed="400000.00", earned="2400.00"),
+        payout_row(src, rate="0.6", disbursed="100000.00", earned="600.00"),
+        payout_row(src, basis="agreed", rate=None, earned="25000.00"),  # ignored
+    ]
+    s = await summary()
+    assert (s["payout_rate"], s["payout_rate_varies"]) == ("0.60", False)
+
+    # Several rates: earned / released over the rate rows, 2 decimals.
+    crm.payouts = [
+        payout_row(src, rate="0.60", disbursed="300000.00", earned="1800.00"),
+        payout_row(src, rate="1.00", disbursed="100000.00", earned="1000.00"),
+    ]
+    s = await summary()
+    assert (s["payout_rate"], s["payout_rate_varies"]) == ("0.70", True)
+
+    # Only agreed amounts: no rate.
+    crm.payouts = [payout_row(src, basis="agreed", rate=None)]
+    s = await summary()
+    assert (s["payout_rate"], s["payout_rate_varies"]) == (None, False)

@@ -129,6 +129,7 @@ def _summary(rows: list[dict[str, Any]]) -> PayoutSummary:
                 gst[key] = gst.get(key, Decimal("0")) + value
 
     return PayoutSummary(
+        **_rate_summary(rows),
         students=len({r["lead_id"] for r in rows}),
         loan_total=total("loan_amount"),
         earned=total("payout_earned"),
@@ -145,6 +146,27 @@ def _summary(rows: list[dict[str, Any]]) -> PayoutSummary:
         invoice_overdue=overdue,
         **gst,
     )
+
+
+def _rate_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """payout_rate / payout_rate_varies for the summary (see PayoutSummary)."""
+    on_rate = [
+        r for r in rows
+        if (r.get("payout_basis") or "agreed") == "rate" and r.get("payout_rate") is not None
+    ]
+    rates = {_exact(r["payout_rate"]).normalize() for r in on_rate}
+    if not rates:
+        return {"payout_rate": None, "payout_rate_varies": False}
+    if len(rates) == 1:
+        return {"payout_rate": _rate(next(iter(rates))), "payout_rate_varies": False}
+    released = sum((_exact(r.get("disbursed_total")) for r in on_rate), Decimal("0"))
+    earned = sum((_exact(r.get("payout_earned")) for r in on_rate), Decimal("0"))
+    avg = (
+        (earned * 100 / released).quantize(_CENT, rounding=ROUND_HALF_UP)
+        if released > 0
+        else (sum(rates) / len(rates)).quantize(_CENT, rounding=ROUND_HALF_UP)
+    )
+    return {"payout_rate": avg, "payout_rate_varies": True}
 
 
 def _sort_key(r: dict[str, Any]):
