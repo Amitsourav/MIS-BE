@@ -166,6 +166,8 @@ async def test_money_serialises_as_strings(client, db, crm):
     rate_row = by_basis["rate"]
     # The partner's own number for the student, never FMC's serial 8862.
     assert rate_row["lead_no"] == 1 and rate_row["full_name"] == "Riya S"
+    # The lead's id, so the row can open the lead page.
+    assert rate_row["lead_id"] == str(student["crm_lead_id"])
     assert "8862" not in str(body)
     assert rate_row["payout_rate"] == "0.60"
     for key in ("loan_amount", "disbursed_total", "earned", "paid", "pending"):
@@ -175,7 +177,7 @@ async def test_money_serialises_as_strings(client, db, crm):
     assert rate_row["pf_paid_on"] == "2026-08-20"
     assert rate_row["earned"] == "10800.00"
     assert set(rate_row) == {
-        "lead_no", "full_name", "bank_name", "loan_amount", "pf_paid_on",
+        "lead_id", "lead_no", "full_name", "bank_name", "loan_amount", "pf_paid_on",
         "disbursed_total", "payout_basis", "payout_rate", "earned", "paid", "pending",
         "overpaid", "balance", "first_disbursed_on", "last_disbursed_on",
         "tds", "net_paid", "paid_on", "invoice_number", "invoice_amount", "invoice_date",

@@ -2,6 +2,7 @@
 2-decimal string — never a float."""
 from __future__ import annotations
 
+import uuid
 from datetime import date
 from decimal import Decimal
 from typing import Annotated
@@ -50,6 +51,7 @@ class PayoutSummary(BaseModel):
 
 
 class PayoutItem(BaseModel):
+    lead_id: uuid.UUID | None = None  # opens the lead page (/me/leads/{id})
     lead_no: int | None  # the partner's own lead number (never FMC's serial)
     full_name: str | None
     bank_name: str | None  # the real bank ("PNB", not "UC PNB"); None on an aggregator

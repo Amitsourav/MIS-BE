@@ -155,6 +155,7 @@ def _sort_key(r: dict[str, Any]):
 
 def _item_fields(r: dict[str, Any]) -> dict[str, Any]:
     return dict(
+        lead_id=r.get("lead_id"),
         lead_no=r.get("lead_no"),
         full_name=r.get("full_name"),
         bank_name=lender_display(r.get("bank_name")),
