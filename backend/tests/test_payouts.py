@@ -111,6 +111,7 @@ async def test_summary_covers_whole_filtered_set_not_the_page(client, db, crm):
     assert body["summary"] == {
         "students": 3,
         "loan_total": "1750000.00",
+        "released_total": "1600000.00",
         "earned": "10500.50",
         "paid": "6500.25",
         "pending": "4000.25",

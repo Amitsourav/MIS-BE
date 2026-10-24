@@ -25,6 +25,7 @@ OptRate = Annotated[
 class PayoutSummary(BaseModel):
     students: int = 0
     loan_total: Money = Decimal("0")
+    released_total: Money = Decimal("0")  # loan money the banks have released so far
     earned: Money = Decimal("0")
     paid: Money = Decimal("0")
     pending: Money = Decimal("0")

@@ -133,6 +133,7 @@ def _summary(rows: list[dict[str, Any]]) -> PayoutSummary:
         **_rate_summary(rows),
         students=len({r["lead_id"] for r in rows}),
         loan_total=total("loan_amount"),
+        released_total=total("disbursed_total"),
         earned=total("payout_earned"),
         paid=paid,
         pending=pending_total,
