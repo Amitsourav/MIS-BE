@@ -3,6 +3,7 @@
 Importing this package registers every model on `Base.metadata` so Alembic's
 autogenerate and `create_all` (tests) see the full schema.
 """
+from app.models.billing import BillingProfile
 from app.models.chat import LeadChatRead
 from app.models.enums import Brand, CanonicalStage
 from app.models.lead import MisLead
@@ -30,4 +31,5 @@ __all__ = [
     "SyncState",
     "Target",
     "LeadChatRead",
+    "BillingProfile",
 ]

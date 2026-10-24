@@ -7,11 +7,10 @@ import asyncio
 import uuid
 from zoneinfo import ZoneInfo
 from datetime import date, datetime, timedelta, timezone
-from decimal import Decimal
 
 import json
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import select
@@ -26,7 +25,8 @@ from app.schemas.common import Page
 from app.crm.stage_map import crm_stage_label, crm_stage_order, crm_stage_value
 from app.config import settings
 from app.crm import chat, invoices, reader
-from app.models import LeadChatRead, ProviderUser
+from app.models import BillingProfile, LeadChatRead, ProviderUser
+from app.schemas.billing import BillingProfileIn, BillingProfileOut
 from app.schemas.invoice import EligibleStudentOut, InvoiceEligibleOut, InvoiceLineIn, InvoiceOut
 from app.schemas.chat import ChatLatestOut, ChatMessageOut, ChatPostIn, ChatThreadOut
 from app.schemas.lead import CrmStageCount, LeadDetailOut, LeadOut, StageEventOut
@@ -39,7 +39,7 @@ from app.schemas.metrics import (
 )
 from app.schemas.charts import LeadFunnelResponse, PayoutMonthlyResponse
 from app.schemas.payout import PayoutsResponse
-from app.services import charts, live
+from app.services import billing, charts, live, partner_invoice
 from app.services import metrics as M
 from app.services import payouts as P
 from app.services.lead_details import LeadDetails, lead_details
@@ -574,11 +574,9 @@ async def payouts_export(
 
 
 # --- partner invoices (stored in the CRM; app/crm/invoices.py) ---
-# A partner bills FMC for their payouts: pick students, enter their own
-# invoice number and date, attach the PDF. FMC only (Admitverse has no payouts).
-# 4 MB, not the CRM's 5: the portal is on Vercel, which refuses request
-# bodies over 4.5 MB before they reach us.
-_PDF_MAX_BYTES = 4 * 1024 * 1024
+# A partner bills FMC for their payouts: a one-time billing setup (with or
+# without GST), then pick students, number and date. The MIS makes the PDF.
+# FMC only (Admitverse has no payouts).
 _IST = ZoneInfo("Asia/Kolkata")
 _NOT_FMC = "Payouts are tracked for FundMyCampus loans"
 
@@ -629,23 +627,9 @@ async def invoice_list(
     return [_invoice_out(r, numbers) for r in rows]
 
 
-@payouts_router.post("/invoices", response_model=InvoiceOut, status_code=201)
-async def invoice_raise(
-    invoice_number: str = Form(""),
-    invoice_date: date = Form(...),
-    lines: str = Form(..., description='JSON: [{"lead_bank_id": "...", "amount": "1234.00"}]; no amount = all that is left'),
-    client_invoice_id: uuid.UUID | None = Form(None, description="Send the same id when retrying"),
-    with_gst: bool = Form(True, description="false = the partner bills without GST (rate 0)"),
-    pdf: UploadFile | None = File(None),
-    principal: Principal = Depends(require_provider),
-    db: AsyncSession = Depends(get_db),
-) -> InvoiceOut:
-    """Raise an invoice to FMC for the chosen students, with its PDF. It is
-    stored in the CRM as `raised`, payouts + GST at the current rate, or
-    without GST when the partner chooses (`with_gst=false`)."""
-    brand = _invoice_brand(principal)
+def _invoice_form(invoice_number: str, invoice_date: date, lines: str, *, need_number: bool):
     number = invoice_number.strip()
-    if not number:
+    if need_number and not number:
         raise HTTPException(422, "Enter your invoice number.")
     if len(number) > 60:
         raise HTTPException(422, "The invoice number can be at most 60 characters.")
@@ -659,44 +643,125 @@ async def invoice_raise(
         raise HTTPException(422, "Pick at least one student.")
     if len({l.lead_bank_id for l in picked}) != len(picked):
         raise HTTPException(422, "The same student is on this invoice twice.")
-    if pdf is None:
-        raise HTTPException(422, "Attach your invoice as a PDF.")
-    content = await pdf.read(_PDF_MAX_BYTES + 1)
-    if len(content) > _PDF_MAX_BYTES:
-        raise HTTPException(422, "The PDF is larger than 4 MB.")
-    if not content.startswith(b"%PDF"):
-        raise HTTPException(422, "The attachment must be a PDF file.")
+    return number, picked
 
-    # The CRM takes one source per invoice. With several, find the students' one.
-    if len(principal.source_ids) == 1:
-        source_id = principal.source_ids[0]
-    else:
-        owner = {uuid.UUID(str(r["lead_bank_id"])): uuid.UUID(str(r["lead_source_id"]))
-                 for r in await invoices.eligible(brand, principal.is_demo, principal.source_ids)}
-        sources = {owner.get(l.lead_bank_id) for l in picked}
-        if None in sources:
-            raise HTTPException(422, "One of these students has nothing left to invoice. Reload and try again.")
-        if len(sources) > 1:
-            raise HTTPException(422, "These students are under different FundMyCampus accounts of yours. Raise a separate invoice for each.")
-        source_id = sources.pop()
 
+async def _profile_or_422(db: AsyncSession, principal: Principal) -> BillingProfile:
+    profile = await db.get(BillingProfile, principal.provider_id)
+    if profile is None:
+        raise HTTPException(422, "Set up your billing details first.")
+    return profile
+
+
+@payouts_router.post("/invoices/preview")
+async def invoice_preview(
+    invoice_number: str = Form(""),
+    invoice_date: date = Form(...),
+    lines: str = Form(...),
+    principal: Principal = Depends(require_provider),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """The invoice PDF exactly as it would be sent. Nothing is saved or sent."""
+    _invoice_brand(principal)
+    number, picked = _invoice_form(invoice_number, invoice_date, lines, need_number=False)
+    profile = await _profile_or_422(db, principal)
+    prep = await partner_invoice.prepare(
+        principal, profile, invoice_number=number, invoice_date=invoice_date, picked=picked
+    )
+    return Response(prep.pdf, media_type="application/pdf",
+                    headers={"Cache-Control": "no-store",
+                             "Content-Disposition": 'inline; filename="invoice-preview.pdf"'})
+
+
+@payouts_router.post("/invoices", response_model=InvoiceOut, status_code=201)
+async def invoice_raise(
+    invoice_number: str = Form(""),
+    invoice_date: date = Form(...),
+    lines: str = Form(..., description='JSON: [{"lead_bank_id": "...", "amount": "1234.00"}]; no amount = all that is left'),
+    client_invoice_id: uuid.UUID | None = Form(None, description="Send the same id when retrying"),
+    principal: Principal = Depends(require_provider),
+    db: AsyncSession = Depends(get_db),
+) -> InvoiceOut:
+    """Raise an invoice to FMC for the chosen students. The MIS makes the PDF
+    from the partner's billing details: payouts + GST when they are
+    GST-registered, without GST otherwise. Stored in the CRM as `raised`."""
+    brand = _invoice_brand(principal)
+    number, picked = _invoice_form(invoice_number, invoice_date, lines, need_number=True)
+    profile = await _profile_or_422(db, principal)
+    prep = await partner_invoice.prepare(
+        principal, profile, invoice_number=number, invoice_date=invoice_date, picked=picked
+    )
     user = await db.get(ProviderUser, uuid.UUID(principal.user_id))
     row, numbers = await asyncio.gather(
         invoices.raise_invoice(
             brand, principal.is_demo, principal.source_ids,
-            lead_source_id=source_id,
+            lead_source_id=prep.source_id,
             invoice_id=client_invoice_id or uuid.uuid4(),
             invoice_number=number,
             invoice_date=invoice_date,
-            gst_rate=settings.payout_gst_rate if with_gst else Decimal("0"),
-            partner_name=principal.provider_name or "Partner",
+            gst_rate=prep.tax.rate,
+            partner_name=profile.legal_name,
             partner_user_email=user.email if user else None,
-            lines=[l.model_dump() for l in picked],
-            pdf=content,
+            lines=prep.lines,
+            pdf=prep.pdf,
         ),
         reader.lead_numbers(brand, principal.source_ids),
     )
     return _invoice_out(row, numbers)
+
+
+async def _billing_out(principal: Principal, profile: BillingProfile) -> BillingProfileOut:
+    out = BillingProfileOut.model_validate(profile)
+    out.state_name = billing.STATES.get(profile.state_code, "")
+    out.tax_split = partner_invoice.tax_split(profile)
+    try:
+        existing = await invoices.list_invoices(principal.brand, principal.is_demo, principal.source_ids)
+    except invoices.InvoiceError:
+        existing = []  # the suggestion is only a starting point
+    out.next_invoice_number = billing.next_invoice_number(
+        profile.invoice_prefix, datetime.now(_IST).date(),
+        [r.get("invoice_number") for r in existing],
+    )
+    return out
+
+
+@payouts_router.get("/billing-profile", response_model=BillingProfileOut | None)
+async def billing_profile_get(
+    principal: Principal = Depends(require_provider),
+    db: AsyncSession = Depends(get_db),
+) -> BillingProfileOut | None:
+    """The partner's billing details, or null before the one-time setup."""
+    _invoice_brand(principal)
+    profile = await db.get(BillingProfile, principal.provider_id)
+    return None if profile is None else await _billing_out(principal, profile)
+
+
+@payouts_router.put("/billing-profile", response_model=BillingProfileOut)
+async def billing_profile_put(
+    body: BillingProfileIn,
+    principal: Principal = Depends(require_provider),
+    db: AsyncSession = Depends(get_db),
+) -> BillingProfileOut:
+    """Set up or change the billing details printed on the partner's invoices.
+    With GST: GSTIN (checked), PAN from it, the GSTIN's state. Without GST: PAN."""
+    _invoice_brand(principal)
+    try:
+        clean = billing.check_profile(body.model_dump())
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    user = await db.get(ProviderUser, uuid.UUID(principal.user_id))
+    profile = await db.get(BillingProfile, principal.provider_id)
+    if profile is None:
+        profile = BillingProfile(provider_id=principal.provider_id, **clean)
+        db.add(profile)
+    else:
+        for k, v in clean.items():
+            setattr(profile, k, v)
+    profile.updated_by_email = user.email if user else None
+    profile.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(profile)
+    return await _billing_out(principal, profile)
 
 
 @payouts_router.get("/invoices/{invoice_id}/pdf")

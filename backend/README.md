@@ -109,13 +109,21 @@ stores just each login's last-read time (`lead_chat_reads`) for unread dots.
 (`date_from`/`date_to` filter on `last_disbursed_on`, the bank's latest release; omitted = all time; AV providers get
 `brand_supported: false`). Money is returned as 2-dp strings.
 
-**Partner invoices (provider, FMC only)** — `GET /provider/invoices/eligible` ·
+**Partner invoices (provider, FMC only)** — `GET/PUT /provider/billing-profile` ·
+`GET /provider/invoices/eligible` · `POST /provider/invoices/preview` ·
 `GET/POST /provider/invoices` · `GET /provider/invoices/{id}/pdf`. A partner bills FMC
-from the Payout page: picks students, types their own invoice number and date, attaches
-the PDF (required, ≤ 4 MB: Vercel caps request bodies at 4.5 MB). Stored in the CRM as `raised` (BE-CRM `/api/v1/mis/invoices`,
-same `mis` key and scoping as chat), at payouts + `PAYOUT_GST_RATE`% GST. The MIS checks
-the fields and PDF first; the CRM's 404 / 409 (duplicate number) / 422 / 429 pass through
-with its own sentence; CRM down → 503 (retry with the same `client_invoice_id`).
+from the Payout page. One-time setup first: **with GST** (GSTIN checked with its check
+digit; PAN and state come from it) or **without GST** (PAN), plus address, contact, bank
+account and an invoice prefix (table `provider_billing_profiles`). Then they pick students
+and a date; the number is suggested (`PREFIX/26-27/001`, editable) and the **MIS makes the
+PDF** (`app/services/invoice_pdf.py`, reportlab): a tax invoice with CGST + SGST (same
+state as FMC) or IGST, or a plain invoice with no GST. "Bill to" is FMC from the
+`FMC_BILL_TO_NAME / _GSTIN / _ADDRESS` ("|" between lines) `/ _STATE_CODE` settings; unset
+name = 503 "Invoicing isn't set up yet". Exact line amounts are sent, so the CRM stores
+what the PDF shows. Stored in the CRM as `raised` (BE-CRM `/api/v1/mis/invoices`, same `mis`
+key and scoping as chat) at `PAYOUT_GST_RATE`% or 0%. The CRM's 404 / 409 (duplicate
+number) / 422 / 429 pass through with its own sentence; CRM down → 503 (retry with the
+same `client_invoice_id`).
 
 **Admin** — `POST/GET/PUT /admin/providers` · `GET /admin/providers/{id}/payouts` · `POST /admin/providers/{id}/users`
 · `POST/GET /admin/providers/{id}/sources` · `GET /admin/crm-sources` ·

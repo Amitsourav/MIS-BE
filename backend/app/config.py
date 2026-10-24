@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     # amounts are before GST; the MIS shows earned / pending / balance with it.
     payout_gst_rate: Decimal = Decimal("18")
 
+    # --- Partner invoices made by the MIS: the "Bill to" (FundMyCampus) ---
+    # Printed on every partner invoice. Unset name = invoicing is off (503).
+    fmc_bill_to_name: str | None = None
+    fmc_bill_to_gstin: str | None = None
+    fmc_bill_to_address: str | None = None  # lines separated by "|"
+    fmc_bill_to_state_code: str | None = None  # 2-digit GST state code, e.g. "07"
+
     # --- CORS ---
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:3000"])
 
